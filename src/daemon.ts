@@ -10,6 +10,7 @@ import { config } from './config.js';
 import { replyMessage, resolveAllowedUsers } from './im/lark/client.js';
 import { loadBotConfigs, registerBot, getBot, getAllBots, findOncallChat } from './bot-registry.js';
 import * as sessionStore from './services/session-store.js';
+import * as scheduleStore from './services/schedule-store.js';
 import * as messageQueue from './services/message-queue.js';
 import { parseEventMessage, resolveNonsupportMessage, stripLeadingMentions, type MessageResource } from './im/lark/message-parser.js';
 import { expandMergeForward } from './im/lark/merge-forward.js';
@@ -777,6 +778,9 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   const cfg = botConfigs[idx];
   registerBot(cfg);
   sessionStore.init(cfg.larkAppId);
+  // Watch schedules.json for external writes (e.g. `botmux schedule add`
+  // running in a separate node process) so dashboard event bus stays in sync.
+  scheduleStore.startExternalWriteWatcher();
   logger.info(`Bot ${idx}/${botConfigs.length}: ${cfg.larkAppId} (cli: ${cfg.cliId})`)
 
   writePidFile();

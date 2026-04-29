@@ -1,8 +1,9 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, statSync, watch } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
+import { dashboardEventBus } from '../core/dashboard-events.js';
 import type { ScheduledTask, ParsedSchedule } from '../types.js';
 
 let tasks: Map<string, ScheduledTask> = new Map();
@@ -242,4 +243,67 @@ export function appendOutputLog(taskId: string, content: string): string {
   const fp = join(dir, fname);
   writeFileSync(fp, content, 'utf-8');
   return fp;
+}
+
+/**
+ * Watch schedules.json for changes from external processes (e.g. `botmux
+ * schedule add` running outside the daemon) and emit dashboard events for
+ * the diff. Idempotent — calling twice is a no-op.
+ *
+ * The existing `load()` already reloads when the on-disk mtime differs from
+ * `cachedMtime`, so this watcher just snapshots the in-memory map, calls
+ * `load()` to refresh, then diffs and publishes. fs.watch can fire multiple
+ * events for one logical write — the mtime guard inside `load()` makes
+ * redundant fires no-ops, and an unchanged diff produces no events anyway.
+ */
+let watcherStarted = false;
+export function startExternalWriteWatcher(): void {
+  if (watcherStarted) return;
+  watcherStarted = true;
+
+  // Make sure the data dir + file exist before we try to watch — fs.watch on
+  // a non-existent path throws ENOENT.
+  ensureDir(dirname(getFilePath()));
+  const fp = getFilePath();
+  if (!existsSync(fp)) {
+    try { writeFileSync(fp, '{}', 'utf-8'); } catch { /* best effort */ }
+  }
+  // Prime cachedMtime so the first watcher fire is comparable.
+  load();
+
+  try {
+    watch(fp, { persistent: false }, () => {
+      try {
+        if (!existsSync(fp)) return;
+        const stat = statSync(fp);
+        if (stat.mtimeMs <= cachedMtime) return; // no real change since last reload
+
+        // Snapshot in-memory state, then let load() refresh from disk.
+        // load() compares mtime internally and updates cachedMtime.
+        const before = new Map<string, ScheduledTask>();
+        for (const [k, v] of tasks) before.set(k, v);
+        load();
+
+        // Diff and publish.
+        for (const [id, t] of tasks) {
+          const prev = before.get(id);
+          if (!prev) {
+            dashboardEventBus.publish({ type: 'schedule.created', body: { schedule: t } });
+          } else if (JSON.stringify(prev) !== JSON.stringify(t)) {
+            dashboardEventBus.publish({ type: 'schedule.updated', body: { id, patch: t } });
+          }
+        }
+        for (const id of before.keys()) {
+          if (!tasks.has(id)) {
+            dashboardEventBus.publish({ type: 'schedule.deleted', body: { id } });
+          }
+        }
+      } catch (err) {
+        logger.debug(`[schedule-store] watch handler error: ${err}`);
+      }
+    });
+    logger.info(`[schedule-store] Watching ${fp} for external writes`);
+  } catch (err: any) {
+    logger.warn(`[schedule-store] Failed to start file watcher: ${err.message}`);
+  }
 }
