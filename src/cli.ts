@@ -1828,10 +1828,16 @@ async function cmdSend(rest: string[]): Promise<void> {
           // either-half-match.
           const re = new RegExp(`(?<![A-Za-z0-9_])@${escName}(?![\\p{L}\\p{N}_])`, 'iu');
           if (!re.test(text)) continue;
-          // Prefer sender-scoped open_id from cross-ref (what Lark's sender app
-          // has seen for the target bot); fall back to target's own open_id.
-          const senderScopedId = crossRef[entry.botName] ?? entry.botOpenId;
-          if (!senderScopedId || alreadyMentioned.has(senderScopedId)) break;
+          // Lark open_id is per-app scoped. Use sender-scoped id from cross-ref
+          // only — falling back to entry.botOpenId would feed Lark a wrong-scope
+          // id (target's self-scoped) and the API would reject it. Skip + warn
+          // so the missing cross-ref is observable instead of silently dropped.
+          const senderScopedId = crossRef[entry.botName];
+          if (!senderScopedId) {
+            console.error(`[botmux send] no cross-ref entry for "${entry.botName}" in app ${appId}, skipping auto-mention (cross-ref populates after the sender app first sees the target bot)`);
+            break;
+          }
+          if (alreadyMentioned.has(senderScopedId)) break;
           mentions.push({ open_id: senderScopedId, name: entry.botName });
           alreadyMentioned.add(senderScopedId);
           break;
