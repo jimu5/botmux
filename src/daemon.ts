@@ -187,6 +187,13 @@ interface DaemonDescriptor {
   pid: number;
   startedAt: number;
   lastHeartbeat: number;
+  /**
+   * Resolved open_ids from this bot's allowedUsers config (post-email
+   * resolution). Surfaced so the dashboard's create-group flow can pick a
+   * creator whose app scope contains the operator. Emails stripped so dashboard
+   * never sees them; empty if the bot has no allowlist configured.
+   */
+  resolvedAllowedUsers: string[];
 }
 
 function writeDaemonDescriptor(d: DaemonDescriptor): void {
@@ -944,6 +951,9 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     pid: process.pid,
     startedAt: Date.now(),
     lastHeartbeat: Date.now(),
+    // Strip email-form entries — the dashboard only needs resolved open_ids,
+    // and the email→open_id resolution below will rewrite this field.
+    resolvedAllowedUsers: getBot(cfg.larkAppId).resolvedAllowedUsers.filter(u => !u.includes('@')),
   };
   // Initialise worker pool with daemon callbacks
   initWorkerPool({
@@ -1004,6 +1014,12 @@ export async function startDaemon(botIndex?: number): Promise<void> {
           logger.warn(`[${cfg.larkAppId}] Failed to resolve allowedUsers: ${err.message}`);
         }
       }
+      // Republish the descriptor with the post-resolution open_ids so the
+      // dashboard's create-group flow can pick this bot as creator using the
+      // operator's scope-correct open_id. Best-effort; the periodic heartbeat
+      // will eventually catch up too.
+      desc.resolvedAllowedUsers = bot.resolvedAllowedUsers.filter(u => !u.includes('@'));
+      try { writeDaemonDescriptor(desc); } catch { /* best effort */ }
     }
 
     // Probe bot open_id and persist to bots-info.json. When the friendly

@@ -1,49 +1,52 @@
 // src/dashboard/operator-selector.ts
 //
-// Helper for the "Create new group" flow: when the dashboard auto-invites the
-// operator into the freshly-created chat, the operator's `open_id` and the
-// creator bot must come from the SAME Lark app — Feishu open_ids are app-
-// scoped, so using bot A as creator with bot B's open_id of the user lands the
-// user in `invalid_user_id_list` and the chat ends up with only bots in it.
+// Helper for the "Create new group" flow: picks which of the user-selected
+// bots should issue the Lark create-chat call. Feishu makes the calling bot
+// the implicit first member + owner, so the creator MUST be one the user
+// explicitly chose — otherwise we'd silently add an extra bot to the chat.
 //
-// This module isolates the selection logic so it's unit-testable independent
-// of the rest of dashboard.ts (which is a pm2 entry script, awkward to test).
+// We also surface the operator's open_id under that bot's scope (from the
+// daemon's pre-resolved allowedUsers) so the route can auto-invite + transfer
+// ownership in the same request. open_ids are app-scoped, so the open_id and
+// the creator daemon must come from the SAME bot.
 //
-// Selection rule: from the aggregator's session cache, pick the most-recent
-// non-closed session whose `larkAppId` corresponds to a currently-online
-// daemon. Both the operator's `open_id` and the creator daemon are derived
-// from that single session so the scope matches.
+// Isolated from dashboard.ts (which is a pm2 entry script) so it stays unit-
+// testable.
 
-export interface SelectorSession {
-  ownerOpenId?: string;
-  larkAppId?: string;
-  status?: string;
-  lastMessageAt?: number;
+export interface DaemonInfoForPick {
+  larkAppId: string;
+  resolvedAllowedUsers: string[];
 }
 
-export interface OperatorPick {
-  openId: string;
-  larkAppId: string;
+export interface CreatorPick {
+  /** larkAppId of the bot that should issue the chat-create call. */
+  creatorLarkAppId: string;
+  /** open_ids in the creator bot's app scope to invite (may be empty). */
+  userOpenIds: string[];
 }
 
 /**
- * Return the most-recent active session whose owner can be auto-invited
- * (sessions whose larkAppId points at a daemon that's currently online).
- * Closed sessions and sessions without ownerOpenId/larkAppId are skipped.
+ * From the user's selected larkAppIds, pick the bot to use as chat creator.
+ *
+ * Preference: first selected bot that's online AND has a non-empty allowlist
+ * (so the operator can be auto-invited). Falls back to the first selected
+ * online bot regardless of allowlist (auto-invite skipped — frontend surfaces
+ * the warn branch). Returns null if none of the selected bots are online.
  */
-export function pickOperatorForCreate(
-  sessions: Iterable<SelectorSession>,
-  isOnline: (larkAppId: string) => boolean,
-): OperatorPick | null {
-  let best: { openId: string; larkAppId: string; lastMessageAt: number } | null = null;
-  for (const s of sessions) {
-    if (s.status === 'closed') continue;
-    if (!s.ownerOpenId || !s.larkAppId) continue;
-    if (!isOnline(s.larkAppId)) continue;
-    const ts = s.lastMessageAt ?? 0;
-    if (!best || ts > best.lastMessageAt) {
-      best = { openId: s.ownerOpenId, larkAppId: s.larkAppId, lastMessageAt: ts };
-    }
+export function pickCreatorForGroup(
+  selectedLarkAppIds: string[],
+  getOnlineDaemon: (larkAppId: string) => DaemonInfoForPick | undefined,
+): CreatorPick | null {
+  const onlineSelected: DaemonInfoForPick[] = [];
+  for (const id of selectedLarkAppIds) {
+    const d = getOnlineDaemon(id);
+    if (d) onlineSelected.push(d);
   }
-  return best ? { openId: best.openId, larkAppId: best.larkAppId } : null;
+  if (onlineSelected.length === 0) return null;
+  const withUsers = onlineSelected.find(d => d.resolvedAllowedUsers.length > 0);
+  const chosen = withUsers ?? onlineSelected[0];
+  return {
+    creatorLarkAppId: chosen.larkAppId,
+    userOpenIds: [...chosen.resolvedAllowedUsers],
+  };
 }

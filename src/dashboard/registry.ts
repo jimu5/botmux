@@ -9,6 +9,13 @@ export interface DaemonInfo {
   pid: number;
   startedAt: number;
   lastHeartbeat: number;
+  /**
+   * open_ids of users the bot's allowedUsers list was resolved to (post-email
+   * resolution). Used by dashboard's "Create new group" flow to pick a creator
+   * bot whose scope contains the operator. Emails are stripped — only resolved
+   * open_ids appear here. May be empty for bots with no allowlist configured.
+   */
+  resolvedAllowedUsers?: string[];
 }
 
 const STALE_MS = 90_000;

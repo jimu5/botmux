@@ -1,75 +1,88 @@
 /**
- * Unit tests for dashboard's operator-selection logic for the "Create new group"
- * auto-invite flow. Critical because Lark `open_id` is app-scoped — picking the
- * wrong creator daemon for a given user open_id will silently fail the invite.
+ * Unit tests for dashboard's creator-selection logic for the "Create new
+ * group" flow. Critical because:
+ *  - The creator bot is the implicit first member of the chat, so it MUST be
+ *    one the user explicitly selected — otherwise we silently pull an extra
+ *    bot into the new group.
+ *  - Lark open_ids are app-scoped, so the auto-invited operator open_id must
+ *    come from the SAME bot we use as creator.
  */
 import { describe, it, expect } from 'vitest';
-import { pickOperatorForCreate, type SelectorSession } from '../src/dashboard/operator-selector.js';
+import { pickCreatorForGroup, type DaemonInfoForPick } from '../src/dashboard/operator-selector.js';
 
-const onlineSet = (...ids: string[]) => (id: string) => ids.includes(id);
+function lookupFrom(daemons: DaemonInfoForPick[]) {
+  const map = new Map(daemons.map(d => [d.larkAppId, d]));
+  return (id: string) => map.get(id);
+}
 
-describe('pickOperatorForCreate', () => {
-  it('returns null when there are no candidates', () => {
-    expect(pickOperatorForCreate([], onlineSet())).toBeNull();
+describe('pickCreatorForGroup', () => {
+  it('returns null when nothing is selected', () => {
+    expect(pickCreatorForGroup([], lookupFrom([]))).toBeNull();
   });
 
-  it('picks the most-recent active session whose daemon is online', () => {
-    const sessions: SelectorSession[] = [
-      { ownerOpenId: 'ou_old', larkAppId: 'cli_a', status: 'idle', lastMessageAt: 100 },
-      { ownerOpenId: 'ou_new', larkAppId: 'cli_a', status: 'working', lastMessageAt: 500 },
-      { ownerOpenId: 'ou_mid', larkAppId: 'cli_a', status: 'idle', lastMessageAt: 300 },
-    ];
-    const pick = pickOperatorForCreate(sessions, onlineSet('cli_a'));
-    expect(pick).toEqual({ openId: 'ou_new', larkAppId: 'cli_a' });
+  it('returns null when none of the selected bots are online', () => {
+    const lookup = lookupFrom([
+      { larkAppId: 'cli_other', resolvedAllowedUsers: ['ou_op'] },
+    ]);
+    expect(pickCreatorForGroup(['cli_a', 'cli_b'], lookup)).toBeNull();
   });
 
-  it('skips closed sessions', () => {
-    const sessions: SelectorSession[] = [
-      { ownerOpenId: 'ou_alive',  larkAppId: 'cli_a', status: 'idle',   lastMessageAt: 100 },
-      { ownerOpenId: 'ou_closed', larkAppId: 'cli_a', status: 'closed', lastMessageAt: 999 },
-    ];
-    const pick = pickOperatorForCreate(sessions, onlineSet('cli_a'));
-    expect(pick?.openId).toBe('ou_alive');
+  it('picks the (single) selected online bot and surfaces its allowlist', () => {
+    const lookup = lookupFrom([
+      { larkAppId: 'cli_a', resolvedAllowedUsers: ['ou_op'] },
+    ]);
+    expect(pickCreatorForGroup(['cli_a'], lookup)).toEqual({
+      creatorLarkAppId: 'cli_a',
+      userOpenIds: ['ou_op'],
+    });
   });
 
-  it('skips sessions whose daemon is offline', () => {
-    const sessions: SelectorSession[] = [
-      { ownerOpenId: 'ou_offline', larkAppId: 'cli_offline', status: 'idle', lastMessageAt: 999 },
-      { ownerOpenId: 'ou_online',  larkAppId: 'cli_online',  status: 'idle', lastMessageAt: 100 },
-    ];
-    const pick = pickOperatorForCreate(sessions, onlineSet('cli_online'));
-    expect(pick).toEqual({ openId: 'ou_online', larkAppId: 'cli_online' });
+  it('prefers the first selected online bot that has an allowlist', () => {
+    // cli_a is online but has no allowlist — we'd rather use cli_b so the
+    // operator can be auto-invited. Selection order is "user clicked these".
+    const lookup = lookupFrom([
+      { larkAppId: 'cli_a', resolvedAllowedUsers: [] },
+      { larkAppId: 'cli_b', resolvedAllowedUsers: ['ou_op'] },
+    ]);
+    expect(pickCreatorForGroup(['cli_a', 'cli_b'], lookup)).toEqual({
+      creatorLarkAppId: 'cli_b',
+      userOpenIds: ['ou_op'],
+    });
   });
 
-  it('skips sessions missing ownerOpenId or larkAppId', () => {
-    const sessions: SelectorSession[] = [
-      {                          larkAppId: 'cli_a', status: 'idle', lastMessageAt: 999 },
-      { ownerOpenId: 'ou_a',                         status: 'idle', lastMessageAt: 999 },
-      { ownerOpenId: 'ou_real',  larkAppId: 'cli_a', status: 'idle', lastMessageAt: 100 },
-    ];
-    const pick = pickOperatorForCreate(sessions, onlineSet('cli_a'));
-    expect(pick?.openId).toBe('ou_real');
+  it('falls back to first selected online bot when none have an allowlist', () => {
+    // All selected bots are online but none have a configured allowlist (rare
+    // — bare bots with no operators). Frontend will surface the warn branch.
+    const lookup = lookupFrom([
+      { larkAppId: 'cli_a', resolvedAllowedUsers: [] },
+      { larkAppId: 'cli_b', resolvedAllowedUsers: [] },
+    ]);
+    expect(pickCreatorForGroup(['cli_a', 'cli_b'], lookup)).toEqual({
+      creatorLarkAppId: 'cli_a',
+      userOpenIds: [],
+    });
   });
 
-  it('returns null when the most-recent session is offline-bound — no fallback', () => {
-    // Important: we deliberately do NOT silently fall back to a different
-    // bot's session, because mixing app-scopes is exactly the bug.
-    const sessions: SelectorSession[] = [
-      { ownerOpenId: 'ou_offline', larkAppId: 'cli_offline', status: 'idle', lastMessageAt: 100 },
-    ];
-    expect(pickOperatorForCreate(sessions, onlineSet('cli_other'))).toBeNull();
+  it('skips offline bots when picking', () => {
+    // cli_a is offline (lookup returns undefined), cli_b is online with an
+    // allowlist — cli_b wins.
+    const lookup = lookupFrom([
+      { larkAppId: 'cli_b', resolvedAllowedUsers: ['ou_op'] },
+    ]);
+    expect(pickCreatorForGroup(['cli_a', 'cli_b'], lookup)).toEqual({
+      creatorLarkAppId: 'cli_b',
+      userOpenIds: ['ou_op'],
+    });
   });
 
-  it('cross-bot: prefers any online-bound session even if a more recent offline-bound session exists', () => {
-    // The selector picks the most-recent ONLINE-BOUND one. If bot A is online
-    // with an older session and bot B is offline with a newer session, bot A
-    // wins — both because that's the only invitable scope and because we
-    // never split open_id from creator daemon.
-    const sessions: SelectorSession[] = [
-      { ownerOpenId: 'ou_b_recent', larkAppId: 'cli_b_offline', status: 'idle', lastMessageAt: 999 },
-      { ownerOpenId: 'ou_a_old',    larkAppId: 'cli_a_online',  status: 'idle', lastMessageAt: 100 },
-    ];
-    const pick = pickOperatorForCreate(sessions, onlineSet('cli_a_online'));
-    expect(pick).toEqual({ openId: 'ou_a_old', larkAppId: 'cli_a_online' });
+  it('preserves selection order — earlier-selected bot with allowlist wins over later one', () => {
+    const lookup = lookupFrom([
+      { larkAppId: 'cli_a', resolvedAllowedUsers: ['ou_a'] },
+      { larkAppId: 'cli_b', resolvedAllowedUsers: ['ou_b'] },
+    ]);
+    expect(pickCreatorForGroup(['cli_a', 'cli_b'], lookup)).toEqual({
+      creatorLarkAppId: 'cli_a',
+      userOpenIds: ['ou_a'],
+    });
   });
 });

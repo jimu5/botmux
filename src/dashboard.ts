@@ -13,7 +13,7 @@ import {
 } from './dashboard/auth.js';
 import { DaemonRegistry } from './dashboard/registry.js';
 import { Aggregator, subscribeDaemon } from './dashboard/aggregator.js';
-import { pickOperatorForCreate } from './dashboard/operator-selector.js';
+import { pickCreatorForGroup } from './dashboard/operator-selector.js';
 
 const SECRET_PATH = join(homedir(), '.botmux', '.dashboard-secret');
 const REGISTRY_DIR = join(homedir(), '.botmux', 'data', 'dashboard-daemons');
@@ -435,10 +435,12 @@ const server = createServer(async (req, res) => {
       return jsonRes(res, 200, { result });
     }
 
-    // Create a new chat — pick a creator daemon and (optionally) auto-invite
-    // the operator into it. Cross-app scoping matters here: Lark `open_id` is
-    // app-scoped, so the operator's open_id and the creator daemon must come
-    // from the SAME bot. See pickOperatorForCreate / operator-selector.ts.
+    // Create a new chat — pick a creator from the user-selected larkAppIds
+    // (Feishu makes the calling bot the implicit first member, so picking
+    // anything else would silently add an unwanted bot). Auto-invite the
+    // operator using the creator bot's pre-resolved allowedUsers — open_ids
+    // are app-scoped, so creator daemon and operator open_id come from the
+    // SAME bot by construction. See dashboard/operator-selector.ts.
     if (req.method === 'POST' && url.pathname === '/api/groups/create') {
       let parsed: { name?: unknown; larkAppIds?: unknown; userOpenIds?: unknown };
       try {
@@ -449,49 +451,41 @@ const server = createServer(async (req, res) => {
       } catch {
         return jsonRes(res, 400, { ok: false, error: 'bad_json' });
       }
-      const online = registry.list();
-      if (online.length === 0) {
-        return jsonRes(res, 503, { ok: false, error: 'no_online_daemon' });
+      const selectedIds = Array.isArray(parsed.larkAppIds)
+        ? (parsed.larkAppIds as unknown[]).filter((x): x is string => typeof x === 'string')
+        : [];
+      if (selectedIds.length === 0) {
+        return jsonRes(res, 400, { ok: false, error: 'larkAppIds_required' });
       }
 
       const explicit = Array.isArray(parsed.userOpenIds)
         ? (parsed.userOpenIds as unknown[]).filter((x): x is string => typeof x === 'string')
         : [];
 
-      let creator = online[0];   // fallback when auto-detection fails
-      let autoInvited: string | null = null;
-      const merged = new Set<string>(explicit);
-
-      if (explicit.length === 0) {
-        // Auto-detect operator. The selector binds open_id to the daemon that
-        // owns it, so we don't accidentally use bot B's open_id with bot A as
-        // creator (which would silently land in invalid_user_id_list).
-        const op = pickOperatorForCreate(
-          aggregator.getSessions() as any[],
-          (id: string) => !!registry.getByAppId(id),
-        );
-        if (op) {
-          const matched = registry.getByAppId(op.larkAppId);
-          if (matched) {
-            creator = matched;
-            merged.add(op.openId);
-            autoInvited = op.openId;
-          }
-        }
+      const pick = pickCreatorForGroup(selectedIds, (id) => {
+        const d = registry.getByAppId(id);
+        return d ? { larkAppId: d.larkAppId, resolvedAllowedUsers: d.resolvedAllowedUsers ?? [] } : undefined;
+      });
+      if (!pick) {
+        return jsonRes(res, 503, { ok: false, error: 'no_online_daemon' });
       }
+      const creator = registry.getByAppId(pick.creatorLarkAppId)!;
+      const merged = new Set<string>([...explicit, ...pick.userOpenIds]);
+      // Auto-invite/transfer/notify target: prefer the explicit open_id passed
+      // by the caller (rare API consumer use), else the creator bot's first
+      // resolved allowlist entry.
+      const autoInvited: string | null = explicit[0] ?? pick.userOpenIds[0] ?? null;
 
       const forwardBody = {
         name: typeof parsed.name === 'string' ? parsed.name : undefined,
-        larkAppIds: parsed.larkAppIds,
+        larkAppIds: selectedIds,
         userOpenIds: [...merged],
-        // Auto-transfer ownership to the auto-invited operator. Same
-        // app-scope guarantee as the invite — the open_id we resolved came
-        // from a session whose larkAppId is the creator daemon.
+        // Auto-transfer ownership to the auto-invited operator. Scope-safe
+        // because the open_id was sourced from the creator bot's own allowlist.
         transferOwnerTo: autoInvited ?? undefined,
-        // Send an @-mention message into the new chat so the operator gets
-        // a Feishu push notification — being a chat member alone doesn't
-        // always surface the chat in their sidebar (esp. mobile). Same
-        // app-scope guarantee as transferOwnerTo.
+        // Send an @-mention message into the new chat so the operator gets a
+        // Feishu push notification — being a chat member alone doesn't always
+        // surface the chat in their sidebar (esp. mobile).
         notifyOwnerOpenId: autoInvited ?? undefined,
       };
       const upstream = await fetch(
