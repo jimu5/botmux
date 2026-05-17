@@ -375,25 +375,40 @@ export class TmuxPipeBackend implements SessionBackend {
     } catch { /* session may not be ready yet — benign */ }
   }
 
-  /** Snapshot the current screen of the adopted pane WITH ANSI escapes,
-   *  including history (-S - = start of scrollback). New web-terminal
-   *  connections receive this string so xterm.js renders the existing
-   *  session state instead of a blank screen.
+  /** Snapshot the full pane history WITH ANSI escapes (`-S - -E -`).
+   *
+   *  Used by web reattach so a brand-new web client sees the whole prior
+   *  conversation. For the screenshot / screen_update fast path use
+   *  `captureViewport()` instead — that one only returns the visible pane
+   *  and is safe to seed a transient xterm-headless with.
    *
    *  IMPORTANT: tmux capture-pane separates rows with bare `\n`, no `\r`.
    *  xterm.js (and any VT100-compliant emulator) treats a bare LF as
    *  "move down one row, keep column" — every captured line lands further
-   *  to the right than the previous one, producing the staircase artefact
-   *  observed in early pipe-mode dogfooding. Normalising every `\n` to
-   *  `\r\n` makes the snapshot render correctly. The live pipe-pane stream
-   *  itself doesn't need this fix — applications write proper `\r\n` (and
-   *  Claude Code uses cursor-positioning instead of bare LF anyway). */
+   *  to the right than the previous one. Normalising every `\n` to `\r\n`
+   *  makes the snapshot render correctly. The live pipe-pane stream itself
+   *  doesn't need this fix — applications write proper `\r\n`. */
   captureCurrentScreen(): string {
+    return this.captureWithBounds('-S - -E -');
+  }
+
+  /** Snapshot ONLY the currently visible pane (no scrollback). Equivalent to
+   *  `tmux capture-pane` with no `-S`/`-E` flags, which defaults to the
+   *  viewport. This is the right input for a transient xterm-headless seed:
+   *  the snapshot row count matches the transient terminal's row count, so
+   *  no normal-buffer scroll happens and the rendered screenshot lines up
+   *  with what the user is seeing in the web terminal right now. */
+  captureViewport(): string {
+    // No `-S`/`-E` flags = tmux default = current viewport only.
+    return this.captureWithBounds('');
+  }
+
+  private captureWithBounds(bounds: string): string {
     if (this.exited) return '';
     try {
       const altOn = this.isPaneInAltBuffer();
       const raw = execSync(
-        `tmux capture-pane -e -p -t ${shellescape(this.paneTarget)} -S -`,
+        `tmux capture-pane -e -p -t ${shellescape(this.paneTarget)}${bounds ? ' ' + bounds : ''}`,
         // Explicit stdio — see getChildPid for why default leaks tmux stderr.
         { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000, maxBuffer: 16 * 1024 * 1024, env: tmuxEnv() },
       );
@@ -410,6 +425,26 @@ export class TmuxPipeBackend implements SessionBackend {
       return normalised;
     } catch {
       return '';
+    }
+  }
+
+  /** Current real tmux pane dimensions. Drives transient-renderer sizing so
+   *  the screenshot canvas matches whatever the web client resized the pane
+   *  to. Returns null if tmux can't be queried (pane gone, server gone). */
+  getPaneSize(): { cols: number; rows: number } | null {
+    if (this.exited) return null;
+    try {
+      const out = execSync(
+        `tmux display-message -p -t ${shellescape(this.paneTarget)} '#{pane_width} #{pane_height}'`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000, env: tmuxEnv() },
+      ).trim();
+      const [cols, rows] = out.split(/\s+/).map(s => parseInt(s, 10));
+      if (Number.isFinite(cols) && Number.isFinite(rows) && cols > 0 && rows > 0) {
+        return { cols, rows };
+      }
+      return null;
+    } catch {
+      return null;
     }
   }
 

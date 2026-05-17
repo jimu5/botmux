@@ -230,6 +230,80 @@ describe('TmuxPipeBackend.captureCurrentScreen', () => {
   });
 });
 
+describe('TmuxPipeBackend.captureViewport', () => {
+  it('uses no `-S`/`-E` flags so tmux returns viewport-only', () => {
+    const be = new TmuxPipeBackend('0:2.0');
+    be.spawn('', [], spawnOpts());
+    mockedExecSync.mockReset();
+    mockedExecSync.mockReturnValue(Buffer.from('') as any);
+    mockedExecSync
+      .mockReturnValueOnce('0\n' as any)
+      .mockReturnValueOnce('viewport line\n' as any);
+    const out = be.captureViewport();
+    expect(out).toBe('viewport line\r\n');
+    const captureCall = mockedExecSync.mock.calls.find(c => String(c[0]).includes('capture-pane'));
+    expect(captureCall).toBeDefined();
+    const cmd = String(captureCall![0]);
+    expect(cmd).toContain('-e');
+    expect(cmd).toContain('-p');
+    // Critically, no `-S` flag — otherwise -S -N pulls N scrollback rows
+    // on top of the viewport (tmux semantics) and the transient terminal
+    // ends up scrolled past the bottom.
+    expect(cmd).not.toContain('-S');
+    expect(cmd).not.toContain('-E');
+  });
+
+  it('still applies alt-buffer prefix when pane is in alt screen', () => {
+    const be = new TmuxPipeBackend('0:2.0');
+    be.spawn('', [], spawnOpts());
+    mockedExecSync.mockReset();
+    mockedExecSync.mockReturnValue(Buffer.from('') as any);
+    mockedExecSync
+      .mockReturnValueOnce('1\n' as any)
+      .mockReturnValueOnce('claude tui\n' as any);
+    const out = be.captureViewport();
+    expect(out.startsWith('\x1b[?1049h\x1b[H\x1b[2J')).toBe(true);
+    expect(out).toContain('claude tui\r\n');
+  });
+});
+
+describe('TmuxPipeBackend.getPaneSize', () => {
+  it('parses `#{pane_width} #{pane_height}` into {cols, rows}', () => {
+    const be = new TmuxPipeBackend('0:2.0');
+    be.spawn('', [], spawnOpts());
+    mockedExecSync.mockReset();
+    mockedExecSync.mockReturnValue('200 60\n' as any);
+    const size = be.getPaneSize();
+    expect(size).toEqual({ cols: 200, rows: 60 });
+    const cmd = String(mockedExecSync.mock.calls[0][0]);
+    expect(cmd).toContain('display-message');
+    expect(cmd).toContain("'#{pane_width} #{pane_height}'");
+  });
+
+  it('returns null when tmux errors (pane gone, server gone)', () => {
+    const be = new TmuxPipeBackend('0:2.0');
+    be.spawn('', [], spawnOpts());
+    mockedExecSync.mockReset();
+    mockedExecSync.mockImplementation(() => { throw new Error('no server'); });
+    expect(be.getPaneSize()).toBeNull();
+  });
+
+  it('returns null on malformed output (NaN width/height)', () => {
+    const be = new TmuxPipeBackend('0:2.0');
+    be.spawn('', [], spawnOpts());
+    mockedExecSync.mockReset();
+    mockedExecSync.mockReturnValue('abc def\n' as any);
+    expect(be.getPaneSize()).toBeNull();
+  });
+
+  it('returns null after exited', () => {
+    const be = new TmuxPipeBackend('0:2.0');
+    be.spawn('', [], spawnOpts());
+    be.kill();
+    expect(be.getPaneSize()).toBeNull();
+  });
+});
+
 describe('normaliseCaptureLineEndings', () => {
   it('handles mixed line endings idempotently', () => {
     expect(normaliseCaptureLineEndings('a\nb')).toBe('a\r\nb');

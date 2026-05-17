@@ -56,6 +56,7 @@ import { tmuxEnv } from './setup/ensure-tmux.js';
 import { IdleDetector } from './utils/idle-detector.js';
 import { ScreenAnalyzer } from './utils/screen-analyzer.js';
 import { captureToPng } from './utils/screenshot-renderer.js';
+import { snapshotToPng, snapshotToText } from './utils/transient-snapshot.js';
 import { uploadImageBuffer } from './utils/lark-upload.js';
 import { config } from './config.js';
 import * as sessionStore from './services/session-store.js';
@@ -1511,6 +1512,10 @@ let renderRows = PTY_ROWS;
 // ─── Headless Terminal for Screen Capture ────────────────────────────────────
 
 let renderer: TerminalRenderer | null = null;
+/** Most recent unfiltered viewport text — kept in sync by the screen_update
+ *  timer for pipe-pane backends so ScreenAnalyzer (which is synchronous) has
+ *  a fresh snapshot to read without needing its own tmux capture-pane call. */
+let lastAnalyzerSnapshot = '';
 let screenUpdateTimer: ReturnType<typeof setInterval> | null = null;
 const SCREEN_UPDATE_INTERVAL_MS = 2_000;
 
@@ -1551,7 +1556,14 @@ function startScreenAnalyzer(): void {
       extraBody: sa.extraBody,
     },
     {
-      getSnapshot: () => renderer?.rawSnapshot() ?? '',
+      getSnapshot: () => {
+        // ScreenAnalyzer is called every ~5s for TUI-prompt detection. We
+        // can't make this async without overhauling the analyzer, so cache
+        // the last pipe-pane text snapshot here and refresh it eagerly.
+        // For pipe-pane backends, the cache is repopulated by the screen
+        // update timer; for others, fall through to the long-lived renderer.
+        return lastAnalyzerSnapshot || renderer?.rawSnapshot() || '';
+      },
       onAnalyzing: () => { /* no-op: only block when prompt is actually detected */ },
       onTuiPrompt: (description, options, multiSelect) => {
         tuiPromptBlocking = true;
@@ -1645,24 +1657,33 @@ async function captureAndUpload(): Promise<void> {
   // stray scheduleOneShotAfterAction firing after user toggled back to hidden.
   if (displayMode !== 'screenshot') { logScreenshotSkip(`displayMode=${displayMode}`); return; }
   if (awaitingFirstPrompt)          { logScreenshotSkip('awaitingFirstPrompt'); return; }
-  if (!renderer)                    { logScreenshotSkip('renderer=null'); return; }
   if (!larkAppIdForUpload || !larkAppSecretForUpload) { logScreenshotSkip('lark credentials missing'); return; }
-
-  const term = renderer.xterm;
-  const startY = term.buffer.active.baseY;
-
-  // Hash dedup — same content → skip upload. Not logged: this is the expected
-  // "nothing changed" path and would dominate the log signal.
-  const snap = renderer.rawSnapshot();
-  const hash = createHash('md5').update(snap).digest('hex');
-  if (hash === lastShotHash) return;
-  lastShotHash = hash;
 
   let png: Buffer;
   try {
-    const shotCols = clamp(term.cols, MIN_RENDER_COLS, MAX_RENDER_COLS);
-    const shotRows = clamp(term.rows, MIN_RENDER_ROWS, MAX_RENDER_ROWS);
-    png = captureToPng(term, { cols: shotCols, rows: shotRows, startY });
+    // Preferred path: pipe-pane backends ask tmux for a fresh viewport
+    // snapshot and render it through a transient xterm-headless. This
+    // avoids the accumulated-buffer drift that produced duplicated /
+    // staircase content under the legacy long-lived renderer.
+    const pipeResult = await snapshotToPng(backend, renderCols, renderRows);
+    if (pipeResult) {
+      if (pipeResult.ansi === lastShotHash) return;
+      lastShotHash = pipeResult.ansi;
+      png = pipeResult.png;
+    } else {
+      // Fallback path: non-pipe backends (PtyBackend, legacy TmuxBackend)
+      // still drive the long-lived renderer.
+      if (!renderer) { logScreenshotSkip('renderer=null'); return; }
+      const term = renderer.xterm;
+      const startY = term.buffer.active.baseY;
+      const snap = renderer.rawSnapshot();
+      const hash = createHash('md5').update(snap).digest('hex');
+      if (hash === lastShotHash) return;
+      lastShotHash = hash;
+      const shotCols = clamp(term.cols, MIN_RENDER_COLS, MAX_RENDER_COLS);
+      const shotRows = clamp(term.rows, MIN_RENDER_ROWS, MAX_RENDER_ROWS);
+      png = captureToPng(term, { cols: shotCols, rows: shotRows, startY });
+    }
   } catch (err: any) {
     logError(`Screenshot render failed: ${err?.message ?? err}`);
     return;
@@ -2114,22 +2135,51 @@ function startScreenUpdates(): void {
   // content (the live failure that prompted this fix).
   renderer = new TerminalRenderer(renderCols, renderRows);
   let lastSentStatus: string | undefined;
+  let lastTextSnapshotHash = '';
   screenUpdateTimer = setInterval(() => {
-    if (!renderer || awaitingFirstPrompt) return;
-    const { content, changed } = renderer.snapshot();
+    if (awaitingFirstPrompt) return;
     let status: 'working' | 'idle' | 'analyzing' = isPromptReady ? 'idle' : 'working';
     if (screenAnalyzer?.isAnalyzing) status = 'analyzing';
-    // Send update when content changed OR status changed (e.g. idle → analyzing)
-    if (changed || status !== lastSentStatus) {
-      lastSentStatus = status;
-      send({ type: 'screen_update', content, status });
-    }
+
+    void (async () => {
+      let content: string;
+      let changed: boolean;
+
+      // Preferred path: pipe-pane backends pull a fresh viewport snapshot
+      // from tmux every tick. This eliminates the accumulated-buffer drift
+      // that produced duplicated/staircase text in 'text' display mode.
+      const pipeText = await snapshotToText(backend, renderCols, renderRows, { filter: true });
+      if (pipeText) {
+        content = pipeText.content;
+        const hash = pipeText.ansi;
+        changed = hash !== lastTextSnapshotHash;
+        lastTextSnapshotHash = hash;
+        // Refresh the unfiltered cache that ScreenAnalyzer reads from. Same
+        // tmux call would otherwise need to fire twice per tick.
+        if (changed) {
+          const rawSnap = await snapshotToText(backend, renderCols, renderRows, { filter: false });
+          if (rawSnap) lastAnalyzerSnapshot = rawSnap.content;
+        }
+      } else if (renderer) {
+        const snap = renderer.snapshot();
+        content = snap.content;
+        changed = snap.changed;
+      } else {
+        return;
+      }
+
+      if (changed || status !== lastSentStatus) {
+        lastSentStatus = status;
+        send({ type: 'screen_update', content, status });
+      }
+    })();
   }, SCREEN_UPDATE_INTERVAL_MS);
 }
 
 function stopScreenUpdates(): void {
   if (screenUpdateTimer) { clearInterval(screenUpdateTimer); screenUpdateTimer = null; }
   if (renderer) { renderer.dispose(); renderer = null; }
+  lastAnalyzerSnapshot = '';
 }
 
 // ─── PTY Management ──────────────────────────────────────────────────────────
