@@ -465,6 +465,57 @@ describe('claude-code writeInput submission confirmation', () => {
     expect(pty.claudeJsonlPath).toBe(oldPath);
   });
 
+  it('pid resolver: accepts cwd mismatch when procStart matches (worker cliCwd drift)', async () => {
+    // Failure mode this guards against: a botmux session created with
+    // workingDir=A is later resumed by a scheduled task with workingDir=B
+    // (e.g. an ai-news cron). Claude itself was spawned in B but the loaded
+    // session retains its original cwd=A, so the pid file reports cwd=A
+    // while the worker's `cliCwd` is B. With strict cwd equality the
+    // resolver rejects, the pinned JSONL stays at the wrong project hash,
+    // and every submit hits the 20s "submit not confirmed" warning.
+    // procStart matching against /proc/<pid>/stat is the strong signal that
+    // the pid file belongs to the live process, so cwd disagreement should
+    // be tolerated and the pid file's cwd believed.
+    const workerCwd = '/tmp/pid-resolver-cwd-drift-worker';
+    const claudeCwd = '/tmp/pid-resolver-cwd-drift-claude';
+    const oldSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const rotatedSessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const oldPath = makeJsonlForSession('pid-resolver-cwd-drift', oldSessionId, workerCwd);
+    const rotatedPath = makeJsonlForSession('pid-resolver-cwd-drift', rotatedSessionId, claudeCwd);
+    const fakePid = 31337;
+    mkdirSync(`/proc/${fakePid}`, { recursive: true });
+    writeFileSync(
+      `/proc/${fakePid}/stat`,
+      `${fakePid} (claude) S 1 1 1 0 -1 4194304 100 0 0 0 1 1 0 0 20 0 1 0 555555 12345 678 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n`,
+    );
+    writeClaudePidFile(fakePid, {
+      sessionId: rotatedSessionId,
+      cwd: claudeCwd,
+      procStart: '555555',
+    });
+
+    const adapter = createClaudeCodeAdapter('/bin/claude');
+    const pty: PtyHandle = {
+      claudeJsonlPath: oldPath,
+      cliPid: fakePid,
+      cliCwd: workerCwd,
+      write: vi.fn(),
+      sendText: vi.fn(),
+      sendSpecialKeys: vi.fn((key: string) => {
+        if (key !== 'Enter') return;
+        appendFileSync(
+          rotatedPath,
+          JSON.stringify({ type: 'user', message: { role: 'user', content: 'submit on rotated path' } }) + '\n',
+        );
+      }),
+    };
+
+    const result = await adapter.writeInput(pty, 'submit on rotated path');
+
+    expect(result).toEqual({ submitted: true, cliSessionId: rotatedSessionId });
+    expect(pty.claudeJsonlPath).toBe(rotatedPath);
+  });
+
   it('pid resolver: ignores file when procStart does not match /proc/<pid>/stat', async () => {
     const cwd = '/tmp/pid-resolver-procstart';
     const oldSessionId = '55555555-5555-4555-8555-555555555555';
