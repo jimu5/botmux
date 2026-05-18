@@ -103,7 +103,7 @@ npm install -g botmux
 # and prints a one-line clipboard copy command for your platform.
 botmux setup
 
-# Start (must be running before configuring WebSocket subscription — Lark checks for an active connection)
+# Start (if you ever need to verify the event subscription, Lark requires the daemon to be running so it can detect the WebSocket connection)
 # Re-validates credentials before forking workers; missing scopes only WARN, do not block the daemon.
 botmux start
 ```

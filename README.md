@@ -204,7 +204,7 @@ npm install -g botmux
 # setup 末尾会把完整权限 JSON 写到 ~/.botmux/lark-scopes.json 并打印一键复制命令
 botmux setup
 
-# 启动（飞书后台配置长连接订阅前需要先启动，否则无法检测到连接）
+# 启动（如果之后需要确认事件订阅，飞书后台会要求 daemon 已在跑才能识别长连接）
 # start 前再校验一次凭证；权限未配齐不会阻塞 daemon，只 WARN
 botmux start
 ```

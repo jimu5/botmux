@@ -11,8 +11,10 @@
  * 注意:
  * - 这个端点 archetype 写死 `PersonalAgent`, 但实测 PersonalAgent 应用是
  *   可以挂 bot 能力的 (`zarazhangrui/feishu-claude-code-bridge` 在用).
- * - 建出来的应用 **没有** 声明 botmux 需要的 scope, scope/事件订阅仍要
- *   用户去开放平台勾. 见 `verify-permissions.ts` 的检测逻辑.
+ * - 建出来的应用 **没有** 声明 botmux 需要的 scope, 用户仍要在开放平台
+ *   「权限管理 → 批量导入/导出权限」粘贴 ~/.botmux/lark-scopes.json (setup
+ *   末尾会自动写一份) 一次性提交审批. 事件订阅 + bot 能力维护者实测默认
+ *   配好, 收不到消息时见 README 的 fallback 自查清单.
  * - secret 永远不打印; 错误只暴露 error code / 阶段标签, 不暴露 secret.
  */
 import { registerApp } from '@larksuiteoapi/node-sdk';
