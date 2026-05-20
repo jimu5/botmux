@@ -100,6 +100,11 @@ export async function renderGroupsPage(root: HTMLElement) {
             <span>Group name <small>(optional)</small></span>
             <input type="text" name="name" placeholder="e.g. AI ChangeLog" maxlength="60">
           </label>
+          <label class="form-row">
+            <span>Bind directory <small>(optional)</small></span>
+            <input type="text" name="bindWorkingDir" placeholder="e.g. ~/projects/botmux">
+            <small>Create the group and bind every invited bot to this directory, so new topics skip the repo picker.</small>
+          </label>
           <fieldset>
             <legend>Bots</legend>
             ${renderBotCheckboxes(allBots)}
@@ -118,6 +123,7 @@ export async function renderGroupsPage(root: HTMLElement) {
       ev.preventDefault();
       const fd = new FormData(ev.target as HTMLFormElement);
       const name = ((fd.get('name') as string) ?? '').trim();
+      const bindWorkingDir = ((fd.get('bindWorkingDir') as string) ?? '').trim();
       const ids = fd.getAll('bot') as string[];
       if (ids.length === 0) { alert('Pick at least one bot.'); return; }
       const submitBtn = (ev.target as HTMLFormElement).querySelector<HTMLButtonElement>('button[type=submit]');
@@ -126,7 +132,7 @@ export async function renderGroupsPage(root: HTMLElement) {
         const r = await fetch('/api/groups/create', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ name: name || undefined, larkAppIds: ids }),
+          body: JSON.stringify({ name: name || undefined, larkAppIds: ids, bindWorkingDir: bindWorkingDir || undefined }),
         });
         const respBody = await r.json();
         if (respBody.ok && respBody.chatId) {
@@ -221,6 +227,14 @@ export async function renderGroupsPage(root: HTMLElement) {
     const transferErr = resp.transferError as string | null | undefined;
     const notifyMsgId = resp.notifyMessageId as string | null | undefined;
     const notifyErr = resp.notifyError as string | null | undefined;
+    const binds = Array.isArray(resp.oncallBindings) ? resp.oncallBindings as any[] : [];
+    const bindOk = binds.filter(b => b?.ok).length;
+    const bindFailed = binds.filter(b => !b?.ok);
+    const bindNote = binds.length > 0
+      ? bindFailed.length === 0
+        ? `<p class="hint-ok">已绑定目录：<code>${escapeHtml(resp.bindResolvedPath ?? '')}</code>（${bindOk}/${binds.length} bots）</p>`
+        : `<p class="hint-warn">目录绑定部分失败：成功 ${bindOk}/${binds.length}。${bindFailed.map(b => `<br><code>${escapeHtml(b.larkAppId ?? '?')}</code>: ${escapeHtml(b.error ?? 'unknown')}`).join('')}</p>`
+      : '';
     let inviteNote: string;
     if (auto) {
       const transferLine = ownerTo
@@ -250,6 +264,7 @@ export async function renderGroupsPage(root: HTMLElement) {
         <p><b>chatId:</b> <code>${escapeHtml(chatId)}</code> <button type="button" data-copy="${escapeHtml(chatId)}">copy</button></p>
         <p><b>创建者:</b> <code>${escapeHtml(resp.creator ?? '?')}</code></p>
         ${inviteNote}
+        ${bindNote}
         ${invalidNote ? `<ul>${invalidNote}</ul>` : ''}
         <div class="actions">
           <a class="btn-link primary" href="${appLink}" target="_blank" rel="noopener">↗ 打开新群</a>

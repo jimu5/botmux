@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { createRequire } from 'node:module';
 import { createHmac, randomBytes } from 'node:crypto';
+import { validateWorkingDir } from './core/working-dir.js';
 import { enableAutostart, disableAutostart, autostartStatus, refreshAutostart } from './autostart.js';
 import { tmuxEnv } from './setup/ensure-tmux.js';
 import { writeBotsJsonAtomic as writeBotsAtomic } from './setup/bots-store.js';
@@ -2761,6 +2762,7 @@ botmux create-group — 用一组机器人新建飞书群
 
 用法:
   botmux create-group --bot <name|larkAppId> [--bot ...] [--name "群名"]
+                      [--working-dir <path>]
 
 参数:
   --bot <ref>     至少一个，可多次。ref 推荐用 bot 显示名（同 botmux send 的 @<name>）或完整 larkAppId；
@@ -2768,12 +2770,16 @@ botmux create-group — 用一组机器人新建飞书群
                   bots.json 中第一个。重名 → 取 bots.json 中第一个匹配，stderr 打 warning。
                   重复 ref → 自动去重保留首次顺序。
   --name <群名>   可选；不传则用飞书默认无名群。
+  --working-dir <path>
+                 可选；创建成功后，把新群为所有成功入群的 bot 绑定到该目录（等价于逐个 /oncall bind），
+                 下次在群里开新话题时直接使用该目录，跳过仓库选择卡片。也可写作 --cwd / --dir。
 
 行为:
   - 第一个解析到的 bot 作为 creator（决定建群身份 + 初始群主 + open_id app scope）。
   - 邀请用户 / 转让群主 / @通知 对象都从 creator 的 resolvedAllowedUsers 取首个 open_id（email 自动转换；
     转不出来或为空则跳过对应步骤，stderr warning）。
   - 不依赖 botmux 会话，任何环境都能跑。
+  - --working-dir 会先校验路径存在且是目录；绑定失败不会重复建群，会在 stderr 给出逐 bot 结果。
 
 输出协议（skill 友好）:
   - 成功（即使 transfer/notify 部分失败）：stdout 单行 chatId，exit 0；stderr 打人类提示 + applink。
@@ -2786,6 +2792,26 @@ botmux create-group — 用一组机器人新建飞书群
 
   const botRefs = argValues(rest, '--bot');
   const name = argValue(rest, '--name');
+  const workingDirArg = argValue(rest, '--working-dir', '--cwd', '--dir');
+
+  let bindWorkingDir: string | undefined;
+  let bindWorkingDirResolved: string | undefined;
+  if (workingDirArg !== undefined) {
+    const trimmed = workingDirArg.trim();
+    if (!trimmed) {
+      console.error('--working-dir 不能为空。');
+      process.exit(1);
+    }
+    const validation = validateWorkingDir(trimmed);
+    if (!validation.ok) {
+      console.error(`--working-dir ${validation.error}`);
+      process.exit(1);
+    }
+    // Keep the user's spelling in bots.json, matching `/oncall bind`, while
+    // still showing the resolved path in CLI output for typo diagnostics.
+    bindWorkingDir = trimmed;
+    bindWorkingDirResolved = validation.resolvedPath;
+  }
 
   if (botRefs.length === 0) {
     console.error('用法: botmux create-group --bot <name|larkAppId> [--bot ...] [--name "群名"]');
@@ -2868,6 +2894,7 @@ botmux create-group — 用一组机器人新建飞书群
       userOpenIds: targetOpenId ? [targetOpenId] : [],
       transferOwnerTo: targetOpenId,
       notifyOwnerOpenId: targetOpenId,
+      bindWorkingDir,
     });
   } catch (err: any) {
     console.error(`建群失败: ${err?.message ?? err}`);
@@ -2896,6 +2923,14 @@ botmux create-group — 用一组机器人新建飞书群
     console.error(`⚠️  @通知发送失败: ${result.notifyError}`);
   } else if (result.notifyMessageId) {
     console.error(`✅ @通知已发送 (msg ${result.notifyMessageId})`);
+  }
+  if (bindWorkingDir) {
+    const ok = result.oncallBindings.filter(b => b.ok).length;
+    const failed = result.oncallBindings.filter(b => !b.ok);
+    console.error(`✅ oncall 绑定目录：${bindWorkingDir} → ${bindWorkingDirResolved}（成功 ${ok}/${result.oncallBindings.length}）`);
+    for (const b of failed) {
+      console.error(`⚠️  ${b.larkAppId} 绑定失败: ${b.error ?? 'unknown'}`);
+    }
   }
 }
 

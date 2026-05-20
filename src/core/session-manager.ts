@@ -5,7 +5,7 @@
  */
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { homedir } from 'node:os';
+import { expandHome } from './working-dir.js';
 import { config } from '../config.js';
 import * as sessionStore from '../services/session-store.js';
 import * as messageQueue from '../services/message-queue.js';
@@ -36,9 +36,7 @@ function sessionLastMessageAtMs(session: { createdAt?: string; lastMessageAt?: s
 
 // ─── Path helpers ────────────────────────────────────────────────────────────
 
-export function expandHome(p: string): string {
-  return p.startsWith('~') ? join(homedir(), p.slice(1)) : p;
-}
+export { expandHome };
 
 export function getSessionWorkingDir(ds?: DaemonSession): string {
   if (ds?.workingDir) return expandHome(ds.workingDir);

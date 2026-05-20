@@ -293,3 +293,55 @@ describe('POST /api/groups/:chatId/add-bots (Phase B)', () => {
     spy.mockRestore();
   });
 });
+
+describe('POST /api/groups/create', () => {
+  it('forwards bindWorkingDir after validating it is an existing directory', async () => {
+    setLarkAppId('test-app');
+    const spy = vi.spyOn(oncallStore, 'bindOncall').mockResolvedValue({
+      ok: true,
+      entry: { chatId: 'oc_new', workingDir: process.cwd() },
+      created: true,
+    });
+    const createSpy = vi.spyOn(groupsStore, 'createChat').mockResolvedValue({
+      chatId: 'oc_new',
+      invalidBotIds: [],
+      invalidUserIds: [],
+    });
+    handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/groups/create`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ larkAppIds: ['test-app', 'cli_X'], bindWorkingDir: process.cwd() }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.bindResolvedPath).toBe(process.cwd());
+    expect(body.oncallBindings).toEqual([
+      { larkAppId: 'test-app', ok: true, created: true },
+      { larkAppId: 'cli_X', ok: true, created: true },
+    ]);
+    expect(spy).toHaveBeenCalledWith('test-app', 'oc_new', process.cwd());
+    expect(spy).toHaveBeenCalledWith('cli_X', 'oc_new', process.cwd());
+    spy.mockRestore();
+    createSpy.mockRestore();
+  });
+
+  it('rejects missing bindWorkingDir before creating the group', async () => {
+    setLarkAppId('test-app');
+    const createSpy = vi.spyOn(groupsStore, 'createChat').mockResolvedValue({
+      chatId: 'oc_should_not_create',
+      invalidBotIds: [],
+      invalidUserIds: [],
+    });
+    handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/groups/create`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ larkAppIds: ['test-app'], bindWorkingDir: '/definitely/not/a/real/botmux/path' }),
+    });
+    expect(res.status).toBe(400);
+    expect(createSpy).not.toHaveBeenCalled();
+    createSpy.mockRestore();
+  });
+});

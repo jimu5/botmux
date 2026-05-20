@@ -25,6 +25,11 @@ vi.mock('../src/im/lark/client.js', () => ({
   sendMessage: (...args: any[]) => mockSendMessage(...args),
 }));
 
+const mockBindOncall = vi.fn();
+vi.mock('../src/services/oncall-store.js', () => ({
+  bindOncall: (...args: any[]) => mockBindOncall(...args),
+}));
+
 import { createGroupWithBots } from '../src/services/group-creator.js';
 
 const CREATOR = 'cli_creator_app';
@@ -36,6 +41,7 @@ describe('createGroupWithBots', () => {
     mockCreateChat.mockReset();
     mockTransferChatOwner.mockReset();
     mockSendMessage.mockReset();
+    mockBindOncall.mockReset();
   });
 
   it('returns chatId + all status fields on a clean happy path', async () => {
@@ -66,6 +72,7 @@ describe('createGroupWithBots', () => {
       transferError: null,
       notifyMessageId: 'om_notify_1',
       notifyError: null,
+      oncallBindings: [],
     });
   });
 
@@ -153,6 +160,48 @@ describe('createGroupWithBots', () => {
       creatorLarkAppId: CREATOR,
       larkAppIds: [CREATOR],
     })).rejects.toThrow('bad app secret');
+  });
+
+  it('binds the newly created chat for joined bots when bindWorkingDir is provided', async () => {
+    mockCreateChat.mockResolvedValue({
+      chatId: 'oc_bound',
+      invalidBotIds: ['cli_rejected_bot'],
+      invalidUserIds: [],
+    });
+    mockBindOncall.mockResolvedValue({ ok: true, created: true });
+
+    const result = await createGroupWithBots({
+      creatorLarkAppId: CREATOR,
+      larkAppIds: [CREATOR, OTHER_BOT, 'cli_rejected_bot'],
+      bindWorkingDir: '~/projects/botmux',
+    });
+
+    expect(mockBindOncall).toHaveBeenCalledTimes(2);
+    expect(mockBindOncall).toHaveBeenNthCalledWith(1, CREATOR, 'oc_bound', '~/projects/botmux');
+    expect(mockBindOncall).toHaveBeenNthCalledWith(2, OTHER_BOT, 'oc_bound', '~/projects/botmux');
+    expect(result.oncallBindings).toEqual([
+      { larkAppId: CREATOR, ok: true, created: true },
+      { larkAppId: OTHER_BOT, ok: true, created: true },
+    ]);
+  });
+
+  it('reports per-bot oncall bind failures without aborting group creation', async () => {
+    mockCreateChat.mockResolvedValue({ chatId: 'oc_bound', invalidBotIds: [], invalidUserIds: [] });
+    mockBindOncall
+      .mockResolvedValueOnce({ ok: true, created: false })
+      .mockResolvedValueOnce({ ok: false, reason: 'bot_not_in_config' });
+
+    const result = await createGroupWithBots({
+      creatorLarkAppId: CREATOR,
+      larkAppIds: [CREATOR, OTHER_BOT],
+      bindWorkingDir: '/repo',
+    });
+
+    expect(result.chatId).toBe('oc_bound');
+    expect(result.oncallBindings).toEqual([
+      { larkAppId: CREATOR, ok: true, created: false },
+      { larkAppId: OTHER_BOT, ok: false, error: 'bot_not_in_config' },
+    ]);
   });
 
   it('omits transfer/notify steps entirely when targets are not provided', async () => {

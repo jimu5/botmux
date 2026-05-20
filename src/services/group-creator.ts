@@ -19,6 +19,7 @@
  */
 import { createChat, transferChatOwner } from './groups-store.js';
 import { sendMessage } from '../im/lark/client.js';
+import { bindOncall } from './oncall-store.js';
 
 export interface CreateGroupOpts {
   creatorLarkAppId: string;
@@ -29,6 +30,10 @@ export interface CreateGroupOpts {
   userOpenIds?: string[];
   transferOwnerTo?: string;
   notifyOwnerOpenId?: string;
+  /** Optional working directory to bind the newly created chat to oncall for
+   *  every invited bot. The path is validated by callers; this service only
+   *  persists the binding after chat.create succeeds. */
+  bindWorkingDir?: string;
 }
 
 export interface CreateGroupResult {
@@ -41,6 +46,7 @@ export interface CreateGroupResult {
   transferError: string | null;
   notifyMessageId: string | null;
   notifyError: string | null;
+  oncallBindings: { larkAppId: string; ok: boolean; created?: boolean; error?: string }[];
 }
 
 export async function createGroupWithBots(opts: CreateGroupOpts): Promise<CreateGroupResult> {
@@ -87,6 +93,28 @@ export async function createGroupWithBots(opts: CreateGroupOpts): Promise<Create
     }
   }
 
+  const oncallBindings: CreateGroupResult['oncallBindings'] = [];
+  const bindWorkingDir = opts.bindWorkingDir?.trim();
+  if (bindWorkingDir) {
+    // Bind the new chat for every bot that actually joined it. The creator is
+    // an implicit member; Lark reports rejected invitees in invalidBotIds.
+    const invalidBots = new Set(r.invalidBotIds);
+    const targetBotIds = Array.from(new Set([opts.creatorLarkAppId, ...opts.larkAppIds]))
+      .filter(id => !invalidBots.has(id));
+    for (const larkAppId of targetBotIds) {
+      try {
+        const br = await bindOncall(larkAppId, r.chatId, bindWorkingDir);
+        if (br.ok) {
+          oncallBindings.push({ larkAppId, ok: true, created: br.created });
+        } else {
+          oncallBindings.push({ larkAppId, ok: false, error: br.reason });
+        }
+      } catch (e: any) {
+        oncallBindings.push({ larkAppId, ok: false, error: e?.message ?? String(e) });
+      }
+    }
+  }
+
   return {
     ok: true,
     chatId: r.chatId,
@@ -97,5 +125,6 @@ export async function createGroupWithBots(opts: CreateGroupOpts): Promise<Create
     transferError,
     notifyMessageId,
     notifyError,
+    oncallBindings,
   };
 }

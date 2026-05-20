@@ -2,8 +2,7 @@
  * Command handler — processes /slash commands from users.
  * Extracted from daemon.ts for modularity.
  */
-import { existsSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { config } from '../config.js';
 import { getBot, getAllBots } from '../bot-registry.js';
 import * as sessionStore from '../services/session-store.js';
@@ -16,6 +15,7 @@ import { deleteMessage } from '../im/lark/client.js';
 import { logger } from '../utils/logger.js';
 import { killWorker, forkWorker, forkAdoptWorker, getCurrentCliVersion } from './worker-pool.js';
 import { expandHome, getSessionWorkingDir, getProjectScanDir, getProjectScanDirs } from './session-manager.js';
+import { validateWorkingDir } from './working-dir.js';
 import { discoverAdoptableSessions, validateAdoptTarget, type AdoptableSession } from './session-discovery.js';
 import { generateAuthUrl, getTokenStatus } from '../utils/user-token.js';
 import { bindOncall, unbindOncall, getOncallStatus } from '../services/oncall-store.js';
@@ -46,26 +46,9 @@ export interface SlashCommandInvocation {
 
 const MULTILINE_COMMANDS = new Set(['/schedule']);
 
-/**
- * Validate a user-supplied path for `/cd` and `/oncall bind`. Trust model is
- * "owner explicitly chose a directory" — the daemon already runs CLI prompts
- * with full filesystem access, so an allowlist would be theater. We only do
- * the typo guards: exists and is a directory.
- */
-export function validateWorkingDir(input: string, locale?: Locale): { ok: true; resolvedPath: string } | { ok: false; error: string } {
-  const resolvedPath = resolve(expandHome(input));
-  if (!existsSync(resolvedPath)) {
-    return { ok: false, error: t('cmd.cd.dir_not_exist', { path: resolvedPath }, locale) };
-  }
-  let isDir = false;
-  try { isDir = statSync(resolvedPath).isDirectory(); } catch (e: any) {
-    return { ok: false, error: t('cmd.cd.cannot_read', { path: resolvedPath, msg: e?.message ?? String(e) }, locale) };
-  }
-  if (!isDir) {
-    return { ok: false, error: t('cmd.cd.not_a_directory', { path: resolvedPath }, locale) };
-  }
-  return { ok: true, resolvedPath };
-}
+// `validateWorkingDir` now lives in ./working-dir.js (leaf module the CLI can
+// import without the daemon graph); re-exported here for existing callers.
+export { validateWorkingDir };
 
 /**
  * Parse a force-topic invocation: `/t [prompt]` or `/topic [prompt]`.

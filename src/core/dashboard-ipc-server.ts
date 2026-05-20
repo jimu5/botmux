@@ -1,7 +1,5 @@
 // src/core/dashboard-ipc-server.ts
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
-import { existsSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { logger } from '../utils/logger.js';
 import * as sessionStore from '../services/session-store.js';
 import * as scheduleStore from '../services/schedule-store.js';
@@ -16,7 +14,7 @@ import { resumeSession } from './session-manager.js';
 import { getCliDisplayName } from '../im/lark/card-builder.js';
 import { locateLimiter } from './dashboard-locate.js';
 import { dashboardEventBus } from './dashboard-events.js';
-import { expandHome } from './session-manager.js';
+import { validateWorkingDir } from './working-dir.js';
 import {
   composeRowFromActive,
   composeRowFromClosed,
@@ -362,14 +360,9 @@ ipcRoute('PUT', '/api/oncall/:chatId', async (req, res, p) => {
   if (!workingDir) return jsonRes(res, 400, { ok: false, error: 'workingDir_required' });
 
   // Same validation as /oncall bind in Lark — exists + is a directory.
-  const resolvedPath = resolve(expandHome(workingDir));
-  if (!existsSync(resolvedPath)) {
-    return jsonRes(res, 400, { ok: false, error: `目录不存在：${resolvedPath}` });
-  }
-  let isDir = false;
-  try { isDir = statSync(resolvedPath).isDirectory(); }
-  catch (e: any) { return jsonRes(res, 400, { ok: false, error: `无法读取路径：${resolvedPath}（${e?.message ?? e}）` }); }
-  if (!isDir) return jsonRes(res, 400, { ok: false, error: `路径不是目录：${resolvedPath}` });
+  const v = validateWorkingDir(workingDir);
+  if (!v.ok) return jsonRes(res, 400, { ok: false, error: v.error });
+  const resolvedPath = v.resolvedPath;
 
   const r = await oncallStore.bindOncall(cachedLarkAppId, p.chatId, workingDir);
   if (!r.ok) return jsonRes(res, 400, r);
@@ -422,14 +415,9 @@ ipcRoute('PUT', '/api/bot-default-oncall', async (req, res) => {
   let resolvedPath = '';
   if (enabled) {
     if (!workingDir) return jsonRes(res, 400, { ok: false, error: 'workingDir_required' });
-    resolvedPath = resolve(expandHome(workingDir));
-    if (!existsSync(resolvedPath)) {
-      return jsonRes(res, 400, { ok: false, error: `目录不存在：${resolvedPath}` });
-    }
-    let isDir = false;
-    try { isDir = statSync(resolvedPath).isDirectory(); }
-    catch (e: any) { return jsonRes(res, 400, { ok: false, error: `无法读取路径：${resolvedPath}（${e?.message ?? e}）` }); }
-    if (!isDir) return jsonRes(res, 400, { ok: false, error: `路径不是目录：${resolvedPath}` });
+    const v = validateWorkingDir(workingDir);
+    if (!v.ok) return jsonRes(res, 400, { ok: false, error: v.error });
+    resolvedPath = v.resolvedPath;
   }
 
   const r = await oncallStore.updateBotDefaultOncall(cachedLarkAppId, { enabled, workingDir });
@@ -448,6 +436,7 @@ ipcRoute('POST', '/api/groups/create', async (req, res) => {
     userOpenIds?: unknown;
     transferOwnerTo?: unknown;
     notifyOwnerOpenId?: unknown;
+    bindWorkingDir?: unknown;
   };
   try {
     body = await readJsonBody<{
@@ -456,6 +445,7 @@ ipcRoute('POST', '/api/groups/create', async (req, res) => {
       userOpenIds?: string[];
       transferOwnerTo?: string;
       notifyOwnerOpenId?: string;
+      bindWorkingDir?: string;
     }>(req);
   } catch {
     return jsonRes(res, 400, { error: 'bad_json' });
@@ -477,6 +467,13 @@ ipcRoute('POST', '/api/groups/create', async (req, res) => {
   const notifyTo = typeof body.notifyOwnerOpenId === 'string' && body.notifyOwnerOpenId.trim()
     ? body.notifyOwnerOpenId.trim()
     : null;
+  const bindWorkingDir = typeof body.bindWorkingDir === 'string' ? body.bindWorkingDir.trim() : '';
+  let bindResolvedPath: string | undefined;
+  if (bindWorkingDir) {
+    const v = validateWorkingDir(bindWorkingDir);
+    if (!v.ok) return jsonRes(res, 400, { ok: false, error: v.error });
+    bindResolvedPath = v.resolvedPath;
+  }
   try {
     const r = await createGroupWithBots({
       creatorLarkAppId: cachedLarkAppId,
@@ -485,8 +482,9 @@ ipcRoute('POST', '/api/groups/create', async (req, res) => {
       userOpenIds: userIds,
       transferOwnerTo: transferTo ?? undefined,
       notifyOwnerOpenId: notifyTo ?? undefined,
+      bindWorkingDir: bindWorkingDir || undefined,
     });
-    jsonRes(res, 200, r);
+    jsonRes(res, 200, bindResolvedPath ? { ...r, bindResolvedPath } : r);
   } catch (e) {
     jsonRes(res, 502, { ok: false, error: String((e as Error).message ?? e) });
   }
