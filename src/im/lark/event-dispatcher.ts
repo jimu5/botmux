@@ -498,9 +498,11 @@ export function canTalk(larkAppId: string, chatId: string | undefined, senderOpe
   if (hasChatGrant(larkAppId, chatId, senderOpenId)) return true;
   const bot = getBot(larkAppId);
   const allowedUsers = bot.resolvedAllowedUsers;
-  if (allowedUsers.length === 0) return true;
+  const allowedChatGroupUsers = bot.resolvedAllowedChatGroupUsers;
+  const hasAllowlist = allowedUsers.length > 0 || (bot.config.allowedChatGroups?.length ?? 0) > 0;
+  if (!hasAllowlist) return true;
   if (!senderOpenId) return false;
-  return allowedUsers.includes(senderOpenId) || bot.resolvedAllowedChatGroupUsers.includes(senderOpenId);
+  return allowedUsers.includes(senderOpenId) || allowedChatGroupUsers.includes(senderOpenId);
 }
 
 export function canOperate(larkAppId: string, _chatId: string | undefined, senderOpenId: string | undefined): boolean {

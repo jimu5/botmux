@@ -508,13 +508,25 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
   it('allows ordinary talk for users resolved from allowedChatGroups regardless of current chat', () => {
     mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
     mockGetBot.mockReturnValue({
-      config: { larkAppId: MY_APP_ID, larkAppSecret: 'secret', cliId: 'claude-code' },
+      config: { larkAppId: MY_APP_ID, larkAppSecret: 'secret', cliId: 'claude-code', allowedChatGroups: ['oc_team'] },
       botOpenId: MY_OPEN_ID,
-      resolvedAllowedUsers: ['ou_admin'],
+      resolvedAllowedUsers: [],
       resolvedAllowedChatGroupUsers: [USER_OPEN_ID],
     });
 
     expect(canTalk(MY_APP_ID, 'oc_different_chat', USER_OPEN_ID)).toBe(true);
+  });
+
+  it('fails closed when only allowedChatGroups is configured but no group member resolved', () => {
+    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
+    mockGetBot.mockReturnValue({
+      config: { larkAppId: MY_APP_ID, larkAppSecret: 'secret', cliId: 'claude-code', allowedChatGroups: ['oc_team'] },
+      botOpenId: MY_OPEN_ID,
+      resolvedAllowedUsers: [],
+      resolvedAllowedChatGroupUsers: [],
+    });
+
+    expect(canTalk(MY_APP_ID, 'oc_any', USER_OPEN_ID)).toBe(false);
   });
 
   it('does not grant sensitive operations to allowedChatGroups members', () => {
