@@ -18,6 +18,7 @@ import { handleWorkflowApi, jsonRes } from './dashboard/workflow-api.js';
 import { handleDashboardTriggerApi } from './dashboard/trigger-api.js';
 import { handleConnectorApi } from './dashboard/connector-api.js';
 import { handleWebhookRoute } from './dashboard/webhook-routes.js';
+import { handleTeamRoute } from './dashboard/team-routes.js';
 import { getRunsDir } from './workflows/runs-dir.js';
 import { BotOnboardingManager } from './dashboard/bot-onboarding.js';
 import type { ConnectorDefinition } from './services/connector-store.js';
@@ -272,6 +273,12 @@ const server = createServer(async (req, res) => {
       createLifecycleGroup: createLifecycleGroupForWebhook,
       closeLifecycleGroup: closeLifecycleGroupForWebhook,
     })) {
+      return;
+    }
+
+    // Team platform (pairing-login + authenticated team APIs) — its own
+    // bmx_session auth, mounted before the personal-dashboard token gate.
+    if (await handleTeamRoute(req, res, url)) {
       return;
     }
 
