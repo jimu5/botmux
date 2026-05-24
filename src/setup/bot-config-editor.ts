@@ -40,6 +40,7 @@ export interface BotConfigEditInput {
   backendType?: string;
   workingDir?: string;
   allowedUsers?: string;
+  allowedChatGroups?: string;
 }
 
 export interface RemoveBotConfigResult<T> {
@@ -215,6 +216,15 @@ export function applyBotConfigEdits<T extends Record<string, any>>(
       delete out.allowedUsers;
     } else if (allowedUsers) {
       out.allowedUsers = allowedUsers.split(',').map(s => s.trim()).filter(Boolean);
+    }
+  }
+
+  if (input.allowedChatGroups !== undefined) {
+    const allowedChatGroups = input.allowedChatGroups.trim();
+    if (allowedChatGroups === '-') {
+      delete out.allowedChatGroups;
+    } else if (allowedChatGroups) {
+      out.allowedChatGroups = allowedChatGroups.split(',').map(s => s.trim()).filter(Boolean);
     }
   }
 

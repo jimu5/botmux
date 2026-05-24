@@ -496,14 +496,20 @@ export function canTalk(larkAppId: string, chatId: string | undefined, senderOpe
   if (chatId && isChatOncallBoundForAnyBot(chatId)) return true;
   if (isKnownPeerBot(config.session.dataDir, larkAppId, senderOpenId)) return true;
   if (hasChatGrant(larkAppId, chatId, senderOpenId)) return true;
-  const allowedUsers = getBot(larkAppId).resolvedAllowedUsers;
-  if (allowedUsers.length === 0) return true;
-  return !!senderOpenId && allowedUsers.includes(senderOpenId);
+  const bot = getBot(larkAppId);
+  const allowedUsers = bot.resolvedAllowedUsers;
+  const allowedChatGroupUsers = bot.resolvedAllowedChatGroupUsers;
+  const hasAllowlist = allowedUsers.length > 0 || (bot.config.allowedChatGroups?.length ?? 0) > 0;
+  if (!hasAllowlist) return true;
+  if (!senderOpenId) return false;
+  return allowedUsers.includes(senderOpenId) || allowedChatGroupUsers.includes(senderOpenId);
 }
 
 export function canOperate(larkAppId: string, _chatId: string | undefined, senderOpenId: string | undefined): boolean {
-  const allowedUsers = getBot(larkAppId).resolvedAllowedUsers;
-  if (allowedUsers.length === 0) return true;
+  const bot = getBot(larkAppId);
+  const allowedUsers = bot.resolvedAllowedUsers;
+  const hasAllowlist = allowedUsers.length > 0 || (bot.config.allowedChatGroups?.length ?? 0) > 0;
+  if (!hasAllowlist) return true;
   return !!senderOpenId && allowedUsers.includes(senderOpenId);
 }
 

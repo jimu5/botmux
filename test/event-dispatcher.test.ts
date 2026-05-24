@@ -81,7 +81,7 @@ vi.mock('@larksuiteoapi/node-sdk', () => {
 
 // ─── Imports (must be after mocks) ──────────────────────────────────────────
 
-import { isBotMentioned, startLarkEventDispatcher, writeBotInfoFile, type EventHandlers } from '../src/im/lark/event-dispatcher.js';
+import { canOperate, canTalk, isBotMentioned, startLarkEventDispatcher, writeBotInfoFile, type EventHandlers } from '../src/im/lark/event-dispatcher.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -95,6 +95,7 @@ function setupBotState(opts?: { botOpenId?: string | undefined }) {
     config: { larkAppId: MY_APP_ID, larkAppSecret: 'secret', cliId: 'claude-code' },
     botOpenId: opts && 'botOpenId' in opts ? opts.botOpenId : MY_OPEN_ID,
     resolvedAllowedUsers: [],
+    resolvedAllowedChatGroupUsers: [],
   });
 }
 
@@ -502,6 +503,53 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
       scope: 'thread',
       larkAppId: MY_APP_ID,
     }));
+  });
+
+  it('allows ordinary talk for users resolved from allowedChatGroups regardless of current chat', () => {
+    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
+    mockGetBot.mockReturnValue({
+      config: { larkAppId: MY_APP_ID, larkAppSecret: 'secret', cliId: 'claude-code', allowedChatGroups: ['oc_team'] },
+      botOpenId: MY_OPEN_ID,
+      resolvedAllowedUsers: [],
+      resolvedAllowedChatGroupUsers: [USER_OPEN_ID],
+    });
+
+    expect(canTalk(MY_APP_ID, 'oc_different_chat', USER_OPEN_ID)).toBe(true);
+  });
+
+  it('fails closed when only allowedChatGroups is configured but no group member resolved', () => {
+    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
+    mockGetBot.mockReturnValue({
+      config: { larkAppId: MY_APP_ID, larkAppSecret: 'secret', cliId: 'claude-code', allowedChatGroups: ['oc_team'] },
+      botOpenId: MY_OPEN_ID,
+      resolvedAllowedUsers: [],
+      resolvedAllowedChatGroupUsers: [],
+    });
+
+    expect(canTalk(MY_APP_ID, 'oc_any', USER_OPEN_ID)).toBe(false);
+  });
+
+  it('does not grant sensitive operations to allowedChatGroups members', () => {
+    mockGetBot.mockReturnValue({
+      config: { larkAppId: MY_APP_ID, larkAppSecret: 'secret', cliId: 'claude-code' },
+      botOpenId: MY_OPEN_ID,
+      resolvedAllowedUsers: ['ou_admin'],
+      resolvedAllowedChatGroupUsers: [USER_OPEN_ID],
+    });
+
+    expect(canOperate(MY_APP_ID, 'oc_any', USER_OPEN_ID)).toBe(false);
+    expect(canOperate(MY_APP_ID, 'oc_any', 'ou_admin')).toBe(true);
+  });
+
+  it('does not allow sensitive operations when only allowedChatGroups is configured', () => {
+    mockGetBot.mockReturnValue({
+      config: { larkAppId: MY_APP_ID, larkAppSecret: 'secret', cliId: 'claude-code', allowedChatGroups: ['oc_team'] },
+      botOpenId: MY_OPEN_ID,
+      resolvedAllowedUsers: [],
+      resolvedAllowedChatGroupUsers: [USER_OPEN_ID],
+    });
+
+    expect(canOperate(MY_APP_ID, 'oc_any', USER_OPEN_ID)).toBe(false);
   });
 
   it('allows known botmux peers to @mention in non-oncall chats even when allowedUsers is restricted', async () => {

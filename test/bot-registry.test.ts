@@ -84,6 +84,12 @@ describe('registerBot', () => {
     expect(state.resolvedAllowedUsers).toEqual([]);
   });
 
+  it('should set resolvedAllowedChatGroupUsers empty by default', () => {
+    const cfg = makeCfg();
+    const state = mod.registerBot(cfg);
+    expect(state.resolvedAllowedChatGroupUsers).toEqual([]);
+  });
+
   it('should make the bot retrievable by appId', () => {
     const cfg = makeCfg();
     mod.registerBot(cfg);
@@ -354,6 +360,7 @@ describe('loadBotConfigs', () => {
       backendType: 'tmux',
       workingDir: '/home/user/project',
       allowedUsers: ['alice', 'bob'],
+      allowedChatGroups: ['oc_team', 'oc_project'],
     }]));
 
     const configs = mod.loadBotConfigs();
@@ -365,6 +372,7 @@ describe('loadBotConfigs', () => {
     expect(c.backendType).toBe('tmux');
     expect(c.workingDir).toBe('/home/user/project');
     expect(c.allowedUsers).toEqual(['alice', 'bob']);
+    expect(c.allowedChatGroups).toEqual(['oc_team', 'oc_project']);
   });
 
   it('should split comma-separated workingDir into workingDirs', () => {

@@ -598,6 +598,13 @@ async function promptEditBotConfig(
   ]);
   input.allowedUsers = await ask(rl, `允许的用户 [${formatOptionalValue(bot.allowedUsers)}]: `);
 
+  printInputHelp('允许的群聊组', [
+    '可选。把飞书群聊作为成员授权源，群内成员获得普通使用权限；多个 chat_id 用逗号分隔。',
+    '值通常是 oc_xxx；留空保留当前值；输入 - 清空。',
+    '群成员授权不授予 /restart、/close、终端写入等敏感操作权限。',
+  ]);
+  input.allowedChatGroups = await ask(rl, `允许的群聊组 [${formatOptionalValue(bot.allowedChatGroups)}]: `);
+
   const edited = applyBotConfigEdits(bot, input);
   if (edited.larkAppId !== bot.larkAppId) {
     console.log('\n⚠️  LARK_APP_ID 变更后，旧 appId 下的历史会话/群聊状态数据不会自动迁移。');

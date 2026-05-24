@@ -4,6 +4,7 @@
     "larkAppSecret": "your_secret_1",
     "cliId": "claude-code",
     "allowedUsers": ["alice@company.com"],
+    "allowedChatGroups": ["oc_xxx_team"],
     "workingDir": "~/projects"
   },
   {

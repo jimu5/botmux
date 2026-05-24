@@ -91,6 +91,21 @@ describe('applyBotConfigEdits', () => {
     });
   });
 
+  it('edits and clears allowedChatGroups', () => {
+    const edited = applyBotConfigEdits({
+      larkAppId: 'app',
+      larkAppSecret: 'secret',
+      cliId: 'claude-code',
+      allowedChatGroups: ['oc_old'],
+    }, {
+      allowedChatGroups: 'oc_team, oc_project',
+    });
+    expect(edited.allowedChatGroups).toEqual(['oc_team', 'oc_project']);
+
+    const cleared = applyBotConfigEdits(edited, { allowedChatGroups: '-' });
+    expect(cleared.allowedChatGroups).toBeUndefined();
+  });
+
   it('keeps fields unchanged on empty input and clears optional fields with dash', () => {
     const updated = applyBotConfigEdits({
       larkAppId: 'app',
@@ -164,6 +179,7 @@ describe('resolveCliId', () => {
   it('maps setup menu indices to cliIds', () => {
     expect(resolveCliId('1')).toBe('claude-code');
     expect(resolveCliId('4')).toBe('codex');
+    expect(resolveCliId('7')).toBe('opencode');
   });
 
   it('passes through literal cliIds unchanged', () => {

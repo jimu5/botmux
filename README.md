@@ -530,7 +530,8 @@ botmux setup
     "name": "claude-main",
     "cliId": "claude-code",
     "workingDir": "~/projects",
-    "allowedUsers": ["alice@company.com"]
+    "allowedUsers": ["alice@company.com"],
+    "allowedChatGroups": ["oc_xxx_team"]
   },
   {
     "larkAppId": "cli_xxx_bot2",
@@ -552,6 +553,7 @@ botmux setup
 | `workingDir` | 否 | 默认工作目录，支持逗号分隔多个目录。新话题的 repo 选择卡片会**从该目录自身向下**递归查找 git 仓库（最多 3 层），不再向上扫父目录：指向仓库集合根目录（如 `~/projects`）即列出其下所有仓库，指向单个仓库则只列该仓库（及其 linked worktrees） |
 | `defaultWorkingDir` | 否 | 单仓库默认目录：新话题在无 oncall 绑定 / 无同群兄弟 session 时直接进入该目录，跳过 repo 选择卡片。`/cd <path>` 仍可临时切换；下一个新话题回到该默认值。**与 `defaultOncall` 的区别**：不写 `oncallChats`、不修改 `canTalk`/`canOperate` 权限模型 |
 | `allowedUsers` | 否 | 允许的用户列表（邮箱前缀或 open_id） |
+| `allowedChatGroups` | 否 | 允许的群聊组列表（飞书 `chat_id`，如 `oc_xxx`）。这些群聊的成员获得普通使用权限；成员变更需重启 daemon 生效；敏感操作仍由 `allowedUsers` 控制。 |
 | `oncallChats` | 否 | oncall 绑定（`/oncall bind` 写入），形如 `[{ "chatId": "oc_xxx", "workingDir": "~/projects/foo" }]`，群内任何成员可 @ 提问 |
 
 **配置优先级：** `BOTS_CONFIG` 环境变量 → `~/.botmux/bots.json`

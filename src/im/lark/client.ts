@@ -496,7 +496,31 @@ export async function resolveAllowedUsers(larkAppId: string, raw: string[]): Pro
   return (await resolveAllowedUsersWithMap(larkAppId, raw)).resolved;
 }
 
+export async function listChatMemberOpenIds(larkAppId: string, chatId: string): Promise<string[]> {
+  const c = getBotClient(larkAppId);
+  const openIds: string[] = [];
+  let pageToken: string | undefined;
 
+  do {
+    const res = await (c as any).im.v1.chatMembers.get({
+      path: { chat_id: chatId },
+      params: {
+        member_id_type: 'open_id',
+        page_size: 100,
+        ...(pageToken ? { page_token: pageToken } : {}),
+      },
+    });
+    if (res.code !== 0) {
+      throw new Error(`Failed to list chat members for ${chatId}: ${res.msg} (code=${res.code})`);
+    }
+    for (const item of res.data?.items ?? []) {
+      if (item.member_id) openIds.push(item.member_id);
+    }
+    pageToken = res.data?.has_more ? res.data?.page_token : undefined;
+  } while (pageToken);
+
+  return openIds;
+}
 
 export async function listThreadMessages(larkAppId: string, chatId: string, rootMessageId: string, pageSize: number = 50): Promise<any[]> {
   const c = getBotClient(larkAppId);

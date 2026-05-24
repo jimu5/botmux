@@ -426,7 +426,8 @@ When `~/.botmux/bots.json` already exists, `botmux setup` can add a bot, reconfi
     "name": "claude-main",
     "cliId": "claude-code",
     "workingDir": "~/projects",
-    "allowedUsers": ["alice@company.com"]
+    "allowedUsers": ["alice@company.com"],
+    "allowedChatGroups": ["oc_xxx_team"]
   },
   {
     "larkAppId": "cli_xxx_bot2",
@@ -448,6 +449,7 @@ When `~/.botmux/bots.json` already exists, `botmux setup` can add a bot, reconfi
 | `workingDir` | No | Default working directory, supports comma-separated. The new-topic repo-select card scans for git repos **from this directory downward** (recursive, up to 3 levels), no longer climbing to the parent: point it at a repos root (e.g. `~/projects`) to list every repo beneath it, or at a single repo to list just that repo (and its linked worktrees) |
 | `defaultWorkingDir` | No | Single-repo default: new topics with no oncall binding and no peer-session inheritance spawn directly here, skipping the repo-select card. `/cd <path>` still switches mid-session; the next new topic falls back to this default. **Difference from `defaultOncall`:** does NOT write `oncallChats` and does NOT change the `canTalk` / `canOperate` permission model |
 | `allowedUsers` | No | Allowed users (email prefixes or open_ids) |
+| `allowedChatGroups` | No | Allowed chat groups (`chat_id`, for example `oc_xxx`). Members of these chats can use the bot normally; membership changes take effect after daemon restart; sensitive operations still require `allowedUsers`. |
 | `oncallChats` | No | Oncall bindings (written by `/oncall bind`), e.g. `[{ "chatId": "oc_xxx", "workingDir": "~/projects/foo" }]`; any group member can @ the bot |
 
 **Config priority:** `BOTS_CONFIG` env var > `~/.botmux/bots.json`

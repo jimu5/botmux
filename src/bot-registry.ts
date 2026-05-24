@@ -41,6 +41,7 @@ export interface BotConfig {
   workingDir?: string;
   workingDirs?: string[];
   allowedUsers?: string[];
+  allowedChatGroups?: string[];
   /** Oncall bindings: chat_id → default workingDir. Any group member can talk; allowedUsers still gates card buttons / daemon commands. */
   oncallChats?: OncallChat[];
   /** UI language for this bot: 'zh' or 'en'. Falls back to BOTMUX_LANG / LANG env when unset. */
@@ -75,6 +76,7 @@ export interface BotState {
   botOpenId?: string;
   botName?: string;       // Lark app display name (from /bot/v3/info)
   resolvedAllowedUsers: string[];
+  resolvedAllowedChatGroupUsers: string[];
   /** raw allowedUsers 条目 → 解析后的 open_id。供 /revoke 反查并删除 email 形式的 raw 条目。 */
   rawAllowedUserResolution: Map<string, string>;
 }
@@ -123,6 +125,7 @@ export function registerBot(cfg: BotConfig): BotState {
     config: cfg,
     client,
     resolvedAllowedUsers: [...(cfg.allowedUsers ?? [])],
+    resolvedAllowedChatGroupUsers: [],
     rawAllowedUserResolution: new Map(),
   };
   bots.set(cfg.larkAppId, state);
@@ -289,6 +292,13 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
         }));
     }
 
+    let allowedChatGroups: string[] | undefined;
+    if (Array.isArray(entry.allowedChatGroups)) {
+      allowedChatGroups = entry.allowedChatGroups
+        .filter((x: any): x is string => typeof x === 'string' && x.trim().length > 0)
+        .map((x: string) => x.trim());
+    }
+
     // defaultOncall: per-bot default for auto-binding new group chats.
     // Tolerate missing fields: an entry with `enabled:true` but no workingDir
     // is treated as disabled (dashboard PUT enforces workingDir on save, but
@@ -333,6 +343,7 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
       workingDir: workingDirs?.[0] ?? entry.workingDir,
       workingDirs,
       allowedUsers: entry.allowedUsers,
+      allowedChatGroups,
       oncallChats,
       defaultOncall,
       defaultOncallAutoboundChats,
