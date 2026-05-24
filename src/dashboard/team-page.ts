@@ -59,8 +59,14 @@ export const TEAM_PAGE_HTML = `<!doctype html>
   <section id="app" class="hide">
     <section class="card">
       <h2>团队花名册 <span class="muted" id="team-meta"></span></h2>
-      <table><thead><tr><th>机器人</th><th>CLI</th><th>能力标签</th><th>团队角色</th></tr></thead>
+      <table><thead><tr><th></th><th>机器人</th><th>CLI</th><th>能力标签</th><th>团队角色</th></tr></thead>
         <tbody id="roster"></tbody></table>
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="grp-name" placeholder="群名（如：支付排障）" style="font:inherit;padding:6px 10px;border:1px solid #d0d3d9;border-radius:8px">
+        <button class="primary" id="btn-group">把勾选的机器人拉一个群</button>
+        <span class="hint">勾选上方机器人 → 自动建群并把你也拉进去</span>
+      </div>
+      <div id="grp-out" class="hide" style="margin-top:8px"></div>
     </section>
     <section class="card">
       <h2>团队成员 <span class="muted" id="members-meta"></span>
@@ -130,10 +136,10 @@ async function showApp(){
   $('team-meta').textContent = (t.team?.name || '') + ' · ' + (t.team?.memberCount ?? 0) + ' 名成员';
   $('roster').innerHTML = (t.bots||[]).map(b => {
     const app = esc(b.larkAppId || '');
-    return '<tr><td>'+esc(b.name)+'</td><td class="muted">'+esc(b.cliId)+'</td>'
+    return '<tr><td>'+(app?'<input type="checkbox" class="botpick" data-app="'+app+'">':'')+'</td><td>'+esc(b.name)+'</td><td class="muted">'+esc(b.cliId)+'</td>'
       + '<td><input class="capedit" data-app="'+app+'" value="'+esc(b.capability||'')+'" placeholder="能力标签…"></td>'
       + '<td><button class="roleedit" data-app="'+app+'" data-name="'+esc(b.name)+'">'+(b.hasTeamRole?'已设·改':'设置')+'</button></td></tr>';
-  }).join('') || '<tr><td colspan=4 class=muted>暂无机器人</td></tr>';
+  }).join('') || '<tr><td colspan=5 class=muted>暂无机器人</td></tr>';
   document.querySelectorAll('.capedit').forEach(inp => {
     inp.onchange = async () => { await jput('/api/team/bots/'+encodeURIComponent(inp.dataset.app)+'/capability', { capability: inp.value }); };
   });
@@ -224,6 +230,23 @@ async function openConnModal(){
 }
 $('cn-mode').onchange = syncConnFields; $('cn-kind').onchange = syncConnFields;
 $('btn-newconn').onclick = openConnModal;
+$('btn-group').onclick = async () => {
+  const apps = Array.from(document.querySelectorAll('.botpick')).filter(cb => cb.checked).map(cb => cb.dataset.app);
+  $('grp-out').classList.remove('hide');
+  if (apps.length === 0) { $('grp-out').innerHTML = '<span class="err">请先在上方勾选至少一个机器人</span>'; return; }
+  const name = $('grp-name').value.trim() || '协作群';
+  $('grp-out').innerHTML = '<span class="muted">建群中…</span>';
+  const r = await jpost('/api/team/group', { name, larkAppIds: apps });
+  if (r.body?.ok && r.body.chatId) {
+    const applink = 'https://applink.feishu.cn/client/chat/open?openChatId=' + encodeURIComponent(r.body.chatId);
+    const inv = [];
+    if ((r.body.invalidBotIds||[]).length) inv.push('未能加入的机器人: ' + r.body.invalidBotIds.join(', '));
+    if ((r.body.invalidUserIds||[]).length) inv.push('未能加入的用户: ' + r.body.invalidUserIds.join(', '));
+    $('grp-out').innerHTML = '<span class="ok">群已创建</span> · <a href="' + applink + '" target="_blank">在飞书打开</a> <span class="muted">(' + esc(r.body.chatId) + ')</span>' + (inv.length ? '<p class="hint err">' + esc(inv.join('；')) + '</p>' : '');
+  } else {
+    $('grp-out').innerHTML = '<span class="err">建群失败：' + esc(r.body?.error || r.status) + '</span>';
+  }
+};
 $('connmodal-cancel').onclick = () => $('connmodal').classList.add('hide');
 $('connmodal-save').onclick = async () => {
   const mode = $('cn-mode').value, kind = $('cn-kind').value, name = $('cn-name').value.trim();

@@ -48,6 +48,9 @@ function makeRes(): any {
   return res;
 }
 const call = (req: any, res: any, path: string) => handleTeamRoute(req, res, new URL('http://x' + path), { dataDir });
+// Variant that injects a fake createTeamGroup (daemon proxy is dashboard-side).
+const callWithGroup = (req: any, res: any, path: string, createTeamGroup: any) =>
+  handleTeamRoute(req, res, new URL('http://x' + path), { dataDir, createTeamGroup });
 const json = (res: any) => JSON.parse(res._body);
 function cookieValue(res: any, name: string): string {
   const sc = res._headers['set-cookie'];
@@ -232,6 +235,37 @@ describe('handleTeamRoute', () => {
     const res = makeRes();
     await call(makeReq('POST', '/api/team/connectors', { cookie: 'bmx_session=' + session, body: { name: 'x', source: { type: 'generic' }, target: { kind: 'turn', mode: 'dynamic', botId: 'cli_a' } } }), res, '/api/team/connectors');
     expect(res.statusCode).toBe(403);
+  });
+
+  it('web 拉群: only roster bots, invites self, surfaces invalid lists', async () => {
+    const session = await login(); // 张三, roster has cli_a
+    const c = 'bmx_session=' + session;
+    let captured: any = null;
+    const fakeCreate = async (args: any) => { captured = args; return { ok: true, chatId: 'oc_new', invalidBotIds: [], invalidUserIds: [] }; };
+    // unknown bot rejected (not on roster)
+    let res = makeRes();
+    await callWithGroup(makeReq('POST', '/api/team/group', { cookie: c, body: { name: 'g', larkAppIds: ['cli_ghost'] } }), res, '/api/team/group', fakeCreate);
+    expect(res.statusCode).toBe(400);
+    expect(json(res).error).toBe('unknown_bot');
+    expect(captured).toBeNull(); // never proxied
+    // valid roster bot → creates, invites the requesting user
+    res = makeRes();
+    await callWithGroup(makeReq('POST', '/api/team/group', { cookie: c, body: { name: '排障', larkAppIds: ['cli_a'] } }), res, '/api/team/group', fakeCreate);
+    expect(res.statusCode).toBe(200);
+    expect(json(res).chatId).toBe('oc_new');
+    expect(captured.larkAppIds).toEqual(['cli_a']);
+    expect(captured.userOpenIds).toEqual(['ou_1']); // 张三 invited so they're in the group
+  });
+
+  it('web 拉群 requires a session (401) and rejects empty selection (400)', async () => {
+    let res = makeRes();
+    await callWithGroup(makeReq('POST', '/api/team/group', { body: { larkAppIds: ['cli_a'] } }), res, '/api/team/group', async () => ({ ok: true }));
+    expect(res.statusCode).toBe(401);
+    const session = await login();
+    res = makeRes();
+    await callWithGroup(makeReq('POST', '/api/team/group', { cookie: 'bmx_session=' + session, body: { larkAppIds: [] } }), res, '/api/team/group', async () => ({ ok: true }));
+    expect(res.statusCode).toBe(400);
+    expect(json(res).error).toBe('no_bots_selected');
   });
 
   it('logout clears the session cookie', async () => {

@@ -41,6 +41,10 @@ function deleteTeamRoleFile(dataDir: string, larkAppId: string): void {
 
 export interface TeamRouteDeps {
   dataDir?: string;
+  /** Injected by dashboard.ts (needs daemon proxy + creator selection). */
+  createTeamGroup?: (args: { name: string; larkAppIds: string[]; userOpenIds?: string[] }) => Promise<{
+    ok: boolean; chatId?: string; invalidBotIds?: string[]; invalidUserIds?: string[]; error?: string;
+  }>;
 }
 
 function parseCookies(header: string | undefined): Record<string, string> {
@@ -189,6 +193,23 @@ export async function handleTeamRoute(
     if ((getTeam(dataDir, session.teamId)?.members.length ?? 0) <= 1) { jsonRes(res, 400, { ok: false, error: 'cannot_delete_last' }); return true; }
     const removed = removeMember(dataDir, session.teamId, target);
     jsonRes(res, removed ? 200 : 404, { ok: removed });
+    return true;
+  }
+  if (path === '/api/team/group' && method === 'POST') {
+    if (!deps.createTeamGroup) { jsonRes(res, 501, { ok: false, error: 'group_create_unavailable' }); return true; }
+    let body: any;
+    try { body = await readBody(req); } catch { jsonRes(res, 400, { ok: false, error: 'bad_json' }); return true; }
+    const larkAppIds: string[] = Array.isArray(body?.larkAppIds) ? body.larkAppIds.filter((x: any) => typeof x === 'string') : [];
+    const name = (String(body?.name ?? '').trim()) || '协作群';
+    if (larkAppIds.length === 0) { jsonRes(res, 400, { ok: false, error: 'no_bots_selected' }); return true; }
+    // Only allow bots that are actually on this team's roster (block bad configs).
+    const rosterIds = new Set(buildTeamRoster(dataDir, session.teamId).bots.map(b => b.larkAppId));
+    const unknown = larkAppIds.filter(id => !rosterIds.has(id));
+    if (unknown.length) { jsonRes(res, 400, { ok: false, error: 'unknown_bot', unknown }); return true; }
+    // Invite the requesting user too, so they land in the group.
+    const userOpenIds = session.identity.openId ? [session.identity.openId] : [];
+    const r = await deps.createTeamGroup({ name, larkAppIds, userOpenIds });
+    jsonRes(res, r.ok ? 200 : 502, r);
     return true;
   }
   if (path === '/api/team/invite' && method === 'POST') {

@@ -164,6 +164,34 @@ async function proxyToDaemon(
   return fetch(`http://127.0.0.1:${d.ipcPort}${daemonPath}`, init);
 }
 
+/** Create a Feishu group from the team UI: pick a creator daemon among the
+ *  selected bots, proxy to its /api/groups/create, invite the requesting user.
+ *  Surfaces invalidBotIds/invalidUserIds so the UI never implies a non-added
+ *  bot/user joined. */
+async function createTeamGroup(args: { name: string; larkAppIds: string[]; userOpenIds?: string[] }): Promise<{
+  ok: boolean; chatId?: string; invalidBotIds?: string[]; invalidUserIds?: string[]; error?: string;
+}> {
+  const selectedIds = Array.from(new Set(args.larkAppIds.filter(Boolean)));
+  if (selectedIds.length === 0) return { ok: false, error: 'no_bots_selected' };
+  const pick = pickCreatorForGroup(selectedIds, (id) => {
+    const d = registry.getByAppId(id);
+    return d ? { larkAppId: d.larkAppId, resolvedAllowedUsers: d.resolvedAllowedUsers ?? [] } : undefined;
+  });
+  if (!pick) return { ok: false, error: 'no_online_daemon' };
+  const upstream = await proxyToDaemon(pick.creatorLarkAppId, '/api/groups/create', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: args.name, larkAppIds: selectedIds, userOpenIds: args.userOpenIds ?? [] }),
+  });
+  const text = await upstream.text();
+  let parsed: any = null;
+  try { parsed = JSON.parse(text); } catch { /* leave null */ }
+  if (!upstream.ok || !parsed?.ok || typeof parsed.chatId !== 'string') {
+    return { ok: false, error: parsed?.error ?? `group_create_http_${upstream.status}` };
+  }
+  return { ok: true, chatId: parsed.chatId, invalidBotIds: parsed.invalidBotIds ?? [], invalidUserIds: parsed.invalidUserIds ?? [] };
+}
+
 function lifecycleBotIds(connector: ConnectorDefinition): string[] {
   return Array.from(new Set([connector.target.botId, ...(connector.target.botIds ?? [])].filter(Boolean)));
 }
@@ -278,7 +306,7 @@ const server = createServer(async (req, res) => {
 
     // Team platform (pairing-login + authenticated team APIs) — its own
     // bmx_session auth, mounted before the personal-dashboard token gate.
-    if (await handleTeamRoute(req, res, url)) {
+    if (await handleTeamRoute(req, res, url, { createTeamGroup })) {
       return;
     }
 
