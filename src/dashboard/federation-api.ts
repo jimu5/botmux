@@ -19,6 +19,7 @@ import {
   type FederatedBot,
 } from '../services/federation-store.js';
 import { buildFederatedRoster } from '../services/federation-roster.js';
+import { findMembershipByDelegationToken } from '../services/federation-membership-store.js';
 
 const MAX_BOTS = 200;
 
@@ -67,11 +68,20 @@ function sanitizeBots(input: unknown): FederatedBot[] {
   return out;
 }
 
+export interface FederationApiDeps {
+  dataDir?: string;
+  /** Injected by dashboard.ts — used when a HUB delegates 拉群 to THIS spoke
+   *  (we create the chat with one of OUR local online bots as creator). */
+  createTeamGroup?: (args: { name: string; larkAppIds: string[]; ownerUnionIds?: string[] }) => Promise<{
+    ok: boolean; chatId?: string; shareLink?: string; invalidBotIds?: string[]; invalidOwnerUnionIds?: string[]; error?: string;
+  }>;
+}
+
 export async function handleFederationApi(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-  deps: { dataDir?: string } = {},
+  deps: FederationApiDeps = {},
 ): Promise<boolean> {
   const path = url.pathname;
   if (!path.startsWith('/api/federation/')) return false;
@@ -96,6 +106,8 @@ export async function handleFederationApi(
       deploymentId: dep.deploymentId,
       name: typeof dep.name === 'string' && dep.name ? dep.name : dep.deploymentId,
       bots: sanitizeBots(dep.bots),
+      callbackUrl: typeof dep.callbackUrl === 'string' && /^https?:\/\//i.test(dep.callbackUrl) ? dep.callbackUrl.replace(/\/+$/, '') : undefined,
+      delegationToken: typeof dep.delegationToken === 'string' ? dep.delegationToken : undefined,
     });
     // deploymentId is public (shows in roster) — never hand back an existing
     // deployment's long-lived token. A duplicate must re-bind via an explicit
@@ -134,6 +146,25 @@ export async function handleFederationApi(
     const found = getDeploymentByToken(dataDir, federationToken(req, url));
     if (!found) { jsonRes(res, 403, { ok: false, error: 'unknown_token' }); return true; }
     jsonRes(res, 200, { ok: true, ...buildFederatedRoster(dataDir, found.teamId) });
+    return true;
+  }
+
+  // Hub delegates 拉群 to THIS spoke (hub→spoke): the hub had no local online
+  // creator, so it asks the deployment that owns a selected bot to create the
+  // group with ITS own online bot. Authed by the delegationToken THIS spoke
+  // issued to that hub at join (team-internal trust).
+  if (path === '/api/federation/delegate-group' && method === 'POST') {
+    if (!deps.createTeamGroup) { jsonRes(res, 501, { ok: false, error: 'group_create_unavailable' }); return true; }
+    let body: any;
+    try { body = await readBody(req); } catch { jsonRes(res, 400, { ok: false, error: 'bad_json' }); return true; }
+    const token = federationToken(req, url) || String(body?.delegationToken ?? '').trim();
+    if (!findMembershipByDelegationToken(dataDir, token)) { jsonRes(res, 403, { ok: false, error: 'unknown_token' }); return true; }
+    const larkAppIds: string[] = Array.isArray(body?.larkAppIds) ? body.larkAppIds.filter((x: any) => typeof x === 'string') : [];
+    const ownerUnionIds: string[] = Array.isArray(body?.ownerUnionIds) ? body.ownerUnionIds.filter((x: any) => typeof x === 'string') : [];
+    const name = (String(body?.name ?? '').trim()) || '协作群';
+    if (larkAppIds.length === 0) { jsonRes(res, 400, { ok: false, error: 'no_bots_selected' }); return true; }
+    const r = await deps.createTeamGroup({ name, larkAppIds, ownerUnionIds });
+    jsonRes(res, r.ok ? 200 : 502, r);
     return true;
   }
 

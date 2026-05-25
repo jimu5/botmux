@@ -17,6 +17,7 @@ import { buildFederatedRoster } from '../src/services/federation-roster.js';
 import { registerDeployment } from '../src/services/federation-store.js';
 import { ensureDefaultTeam, addMember, DEFAULT_TEAM_ID } from '../src/services/team-store.js';
 import { createInvite } from '../src/services/invite-store.js';
+import { addMembership } from '../src/services/federation-membership-store.js';
 
 let dataDir: string;
 beforeEach(() => { dataDir = mkdtempSync(join(tmpdir(), 'botmux-fedapi-')); state.dataDir = dataDir; });
@@ -37,6 +38,7 @@ function makeRes(): any {
   return res;
 }
 const call = (req: any, res: any, path: string) => handleFederationApi(req, res, new URL('http://x' + path), { dataDir });
+const callWithGroup = (req: any, res: any, path: string, createTeamGroup: any) => handleFederationApi(req, res, new URL('http://x' + path), { dataDir, createTeamGroup });
 const json = (res: any) => JSON.parse(res._body);
 
 describe('buildFederatedRoster', () => {
@@ -135,6 +137,27 @@ describe('handleFederationApi', () => {
     res = makeRes();
     await call(makeReq('GET', '/api/federation/roster?syncToken=bogus'), res, '/api/federation/roster');
     expect(res.statusCode).toBe(403);
+  });
+
+  it('delegate-group: valid delegationToken → creates via injected createTeamGroup; bad token 403; no dep 501', async () => {
+    // this deployment joined a hub and issued delegationToken 'DTOK' to it
+    addMembership(dataDir, { hubUrl: 'http://hub:7891', teamId: 'default', teamName: 'T', syncToken: 'st', deploymentId: 'dep_me', delegationToken: 'DTOK' });
+    let captured: any = null;
+    const createTeamGroup = vi.fn(async (args: any) => { captured = args; return { ok: true, chatId: 'oc_deleg', shareLink: 'https://x', invalidBotIds: [] }; });
+    // valid token in Authorization header
+    let res = makeRes();
+    await callWithGroup(makeReq('POST', '/api/federation/delegate-group', { name: 'g', larkAppIds: ['cli_a', 'cli_b'], ownerUnionIds: ['on_1'] }, bearer('DTOK')), res, '/api/federation/delegate-group', createTeamGroup);
+    expect(res.statusCode).toBe(200);
+    expect(json(res).chatId).toBe('oc_deleg');
+    expect(captured).toMatchObject({ name: 'g', larkAppIds: ['cli_a', 'cli_b'], ownerUnionIds: ['on_1'] });
+    // unknown token → 403, not delegated
+    res = makeRes();
+    await callWithGroup(makeReq('POST', '/api/federation/delegate-group', { larkAppIds: ['cli_a'] }, bearer('NOPE')), res, '/api/federation/delegate-group', createTeamGroup);
+    expect(res.statusCode).toBe(403);
+    // no createTeamGroup dep → 501
+    res = makeRes();
+    await call(makeReq('POST', '/api/federation/delegate-group', { larkAppIds: ['cli_a'] }, bearer('DTOK')), res, '/api/federation/delegate-group');
+    expect(res.statusCode).toBe(501);
   });
 
   it('join requires inviteCode + deployment', async () => {

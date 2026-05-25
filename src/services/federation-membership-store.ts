@@ -16,6 +16,9 @@ export interface RemoteMembership {
   syncToken: string;
   deploymentId: string;
   joinedAt: number;
+  /** Token THIS spoke issued to the hub at join; the hub presents it on
+   *  delegate-group calls so we can verify the request came from a hub we joined. */
+  delegationToken?: string;
 }
 
 type FileShape = Record<string, RemoteMembership>; // key = `${hubUrl}::${teamId}`
@@ -58,6 +61,13 @@ export function addMembership(dataDir: string, m: Omit<RemoteMembership, 'joined
 /** All remote teams this deployment has joined. */
 export function listMemberships(dataDir: string): RemoteMembership[] {
   return Object.values(readFile(dataDir));
+}
+
+/** Find the membership whose delegationToken matches (verifies an incoming
+ *  hub→spoke delegate call came from a hub this deployment actually joined). */
+export function findMembershipByDelegationToken(dataDir: string, token: string): RemoteMembership | null {
+  if (!token) return null;
+  return Object.values(readFile(dataDir)).find(m => m.delegationToken === token) ?? null;
 }
 
 /** Remove one membership. Returns true if removed. */

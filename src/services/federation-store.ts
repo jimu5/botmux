@@ -34,6 +34,12 @@ export interface FederatedDeployment {
   bots: FederatedBot[];
   joinedAt: number;
   lastSeenAt: number;
+  /** Spoke's dashboard base URL — so this hub can call back to delegate 拉群
+   *  (hub→spoke) when no local online bot can be the group creator. */
+  callbackUrl?: string;
+  /** Token the SPOKE issued to THIS hub at join; the hub presents it on
+   *  delegate calls so the spoke can verify the request is from its hub. */
+  delegationToken?: string;
 }
 
 interface FileShape {
@@ -68,6 +74,8 @@ export interface RegisterInput {
   deploymentId: string;
   name: string;
   bots: FederatedBot[];
+  callbackUrl?: string;
+  delegationToken?: string;
 }
 
 /**
@@ -86,7 +94,7 @@ export function registerDeployment(dataDir: string, teamId: string, input: Regis
   const list = data.teams[teamId] ?? (data.teams[teamId] = []);
   if (list.some(d => d.deploymentId === input.deploymentId)) return { syncToken: '', created: false };
   const syncToken = randomBytes(24).toString('base64url');
-  list.push({ deploymentId: input.deploymentId, name: input.name, syncToken, bots: input.bots, joinedAt: now, lastSeenAt: now });
+  list.push({ deploymentId: input.deploymentId, name: input.name, syncToken, bots: input.bots, joinedAt: now, lastSeenAt: now, callbackUrl: input.callbackUrl, delegationToken: input.delegationToken });
   writeFileAtomic(dataDir, data);
   return { syncToken, created: true };
 }

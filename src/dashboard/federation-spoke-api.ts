@@ -12,6 +12,7 @@
  * See docs/federation-design.md.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { config } from '../config.js';
 import { jsonRes } from './workflow-api.js';
 import { buildTeamRoster } from '../services/team-roster.js';
@@ -19,6 +20,7 @@ import { buildFederatedRoster } from '../services/federation-roster.js';
 import { getDeploymentIdentity, setDeploymentName } from '../services/deployment-identity.js';
 import { addMembership, listMemberships, removeMembership } from '../services/federation-membership-store.js';
 import type { FederatedBot } from '../services/federation-store.js';
+import { listFederatedDeployments } from '../services/federation-store.js';
 import { ensureDefaultTeam, DEFAULT_TEAM_ID } from '../services/team-store.js';
 import { createInvite } from '../services/invite-store.js';
 import { loadBotConfigs } from '../bot-registry.js';
@@ -151,8 +153,30 @@ export async function handleFederationSpokeApi(
     const ownerUnionIds = Array.from(new Set(
       larkAppIds.map(id => rosterById.get(id)?.owner?.unionId).filter((u): u is string => !!u),
     ));
+    // Prefer creating with a LOCAL online bot (its daemon is ours to drive).
     const r = await deps.createTeamGroup({ name, larkAppIds, ownerUnionIds });
-    jsonRes(res, r.ok ? 200 : 502, r);
+    if (r.ok) { jsonRes(res, 200, r); return true; }
+    // No local online creator → delegate to a federated deployment that OWNS a
+    // selected bot and is reachable (hub→spoke); it creates with its own bot.
+    if (r.error === 'no_online_daemon') {
+      const selected = new Set(larkAppIds);
+      for (const dep of listFederatedDeployments(dataDir, DEFAULT_TEAM_ID)) {
+        if (!dep.callbackUrl || !dep.delegationToken) continue;
+        if (!dep.bots.some(b => selected.has(b.larkAppId))) continue;
+        try {
+          const dr = await fetchWithTimeout(fetcher, `${dep.callbackUrl}/api/federation/delegate-group`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${dep.delegationToken}` },
+            body: JSON.stringify({ name, larkAppIds, ownerUnionIds }),
+          });
+          const dj = await dr.json().catch(() => ({} as any));
+          if (dr.ok && dj?.ok && dj.chatId) { jsonRes(res, 200, { ...dj, delegatedTo: dep.name }); return true; }
+        } catch { /* try next deployment */ }
+      }
+      jsonRes(res, 502, { ok: false, error: 'no_creator_available' });
+      return true;
+    }
+    jsonRes(res, 502, r);
     return true;
   }
 
@@ -188,12 +212,16 @@ export async function handleFederationSpokeApi(
     if (!hubUrl) { jsonRes(res, 400, { ok: false, error: 'bad_hub_url' }); return true; }
     if (!inviteCode) { jsonRes(res, 400, { ok: false, error: 'code_required' }); return true; }
     const me = getDeploymentIdentity(dataDir);
+    // Issue a delegationToken to the hub + tell it our callback URL, so the hub
+    // can delegate 拉群 back to us (hub→spoke) when it has no local creator.
+    const delegationToken = randomBytes(24).toString('base64url');
+    const callbackUrl = `http://${config.dashboard.externalHost}:${config.dashboard.port}`;
     let hubRes: Response;
     try {
       hubRes = await fetchWithTimeout(fetcher, `${hubUrl}/api/federation/join`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ inviteCode, deployment: { deploymentId: me.deploymentId, name: me.name, bots: localBots(dataDir) } }),
+        body: JSON.stringify({ inviteCode, deployment: { deploymentId: me.deploymentId, name: me.name, bots: localBots(dataDir), callbackUrl, delegationToken } }),
       });
     } catch (e) {
       const he = hubError(e);
@@ -206,7 +234,7 @@ export async function handleFederationSpokeApi(
       jsonRes(res, status, { ok: false, error: j?.error || `hub_${hubRes.status}` });
       return true;
     }
-    addMembership(dataDir, { hubUrl, teamId: j.teamId, teamName: j.teamName, syncToken: j.syncToken, deploymentId: me.deploymentId });
+    addMembership(dataDir, { hubUrl, teamId: j.teamId, teamName: j.teamName, syncToken: j.syncToken, deploymentId: me.deploymentId, delegationToken });
     jsonRes(res, 200, { ok: true, hubUrl, teamId: j.teamId, teamName: j.teamName });
     return true;
   }

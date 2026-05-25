@@ -111,7 +111,16 @@ Hub 的团队花名册 = 本地 bot（[[team-roster]]，按 bots.json 顺序）+
 - 联邦 bot 被加进群后，它**自己部署的 daemon**（订阅了该 app 事件）自动感知该群并参与——Hub 不碰对方 daemon。
 - 校验：选中 app_id 必须都在**聚合花名册**里；至少一个本地在线 bot 作 creator（否则 `no_online_daemon`）。
 
-实现：`POST /api/team/federated-group {name, larkAppIds}`（dashboard token），校验聚合花名册后复用 `createTeamGroup`（pickCreator 只从本地在线 bot 里选，联邦 bot 自然只作被加成员）。operator 不自动入群（用 share link 进），避开 open_id app-scope。
+实现：`POST /api/team/federated-group {name, larkAppIds}`（dashboard token），校验聚合花名册后复用 `createTeamGroup`（pickCreator 只从本地在线 bot 里选，联邦 bot 自然只作被加成员）。
+
+### creator 不限本部署：hub→spoke 委托建群
+建群必须由「持有该 bot app 凭证」的进程发起，所以 creator 必须是**某部署的本地在线 bot**。为不强制「发起方必须有本地在线 bot」：
+- 优先用**本地**在线 bot 建群；
+- 本地无在线 creator（`no_online_daemon`）→ **委托**给一个「拥有所选 bot、且可达」的联邦部署：hub→spoke `POST {callbackUrl}/api/federation/delegate-group`，对方用自己的在线 bot 建群、加全部 app_id + owners，回 chatId/shareLink（结果带 `delegatedTo`）。都不行 → `no_creator_available`。
+- **互信凭证**：spoke join 时给 hub `callbackUrl`（自己 dashboard 地址）+ `delegationToken`（spoke 生成）；hub 存 FederatedDeployment、spoke 存 RemoteMembership。delegate 调用带 `Authorization: Bearer <delegationToken>`，spoke 用 `findMembershipByDelegationToken` 校验「确是我 join 过的 hub」（团队内互信）。
+
+### owner 一并拉群（按 union_id）
+拉群把**所选 bot 的 owner（人）**也拉进群：聚合花名册带 owner（本地查 bot-owner-store、远端由联邦同步的 `ownerUnionId/ownerName`）；建群后用 **union_id**（租户稳定、跨 app 通用，避开 open_id app-scope）加 owners（`addUsersToChatByUnionId`，`member_id_type=union_id`），加不上的回 `invalidOwnerUnionIds`。
 
 ## 分期
 

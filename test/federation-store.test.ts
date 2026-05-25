@@ -11,7 +11,7 @@ import {
   registerDeployment, syncDeployment, getDeploymentByToken, removeDeploymentByToken,
   listFederatedDeployments, removeDeployment, removeTeamFederation,
 } from '../src/services/federation-store.js';
-import { addMembership, listMemberships, removeMembership } from '../src/services/federation-membership-store.js';
+import { addMembership, listMemberships, removeMembership, findMembershipByDelegationToken } from '../src/services/federation-membership-store.js';
 
 let dataDir: string;
 beforeEach(() => { dataDir = mkdtempSync(join(tmpdir(), 'botmux-fed-')); });
@@ -58,6 +58,13 @@ describe('federation-store (hub)', () => {
     expect(list[0].name).toBe('X');         // not overwritten by the rejected re-register
   });
 
+  it('stores callbackUrl + delegationToken for hub→spoke delegation', () => {
+    registerDeployment(dataDir, 'default', { deploymentId: 'dep_x', name: 'X', bots: [], callbackUrl: 'http://spoke:7891', delegationToken: 'dtok' });
+    const d = listFederatedDeployments(dataDir, 'default')[0];
+    expect(d.callbackUrl).toBe('http://spoke:7891');
+    expect(d.delegationToken).toBe('dtok');
+  });
+
   it('removeDeploymentByToken drops the owning deployment; unknown token is false', () => {
     const { syncToken } = registerDeployment(dataDir, 'default', { deploymentId: 'dep_x', name: 'X', bots: [] });
     expect(removeDeploymentByToken(dataDir, 'nope')).toBe(false);
@@ -96,5 +103,12 @@ describe('federation-membership-store (spoke)', () => {
     expect(removeMembership(dataDir, 'http://hub1:7891', 'default')).toBe(true);
     expect(listMemberships(dataDir).map(m => m.hubUrl)).toEqual(['http://hub2:7891']);
     expect(removeMembership(dataDir, 'http://nope', 'x')).toBe(false);
+  });
+
+  it('findMembershipByDelegationToken resolves the issuing membership', () => {
+    addMembership(dataDir, { hubUrl: 'http://hub:7891', teamId: 'default', teamName: 'T', syncToken: 'tok', deploymentId: 'dep_me', delegationToken: 'DTOK' });
+    expect(findMembershipByDelegationToken(dataDir, 'DTOK')?.hubUrl).toBe('http://hub:7891');
+    expect(findMembershipByDelegationToken(dataDir, 'nope')).toBeNull();
+    expect(findMembershipByDelegationToken(dataDir, '')).toBeNull();
   });
 });

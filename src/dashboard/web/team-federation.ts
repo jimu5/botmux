@@ -182,10 +182,13 @@ export function renderTeamFederationPage(root: HTMLElement): void {
       const link = b.shareLink || ('https://applink.feishu.cn/client/chat/open?openChatId=' + encodeURIComponent(b.chatId));
       const invalid = (b.invalidBotIds || []).length ? `<p class="hint err">未能加入的机器人：${escapeHtml((b.invalidBotIds || []).join(', '))}</p>` : '';
       const invOwners = (b.invalidOwnerUnionIds || []).length ? `<p class="hint err">未能拉进群的 owner（${(b.invalidOwnerUnionIds || []).length} 人，可能不在本租户或已离职）</p>` : '';
-      out.innerHTML = `<span class="ok">群已创建</span>（已把所选机器人的 owner 一并拉进群） · <a href="${escapeHtml(link)}" target="_blank">在飞书打开</a>${invalid}${invOwners}`;
+      const by = b.delegatedTo ? `（由「${escapeHtml(b.delegatedTo)}」部署的机器人建群）` : '';
+      out.innerHTML = `<span class="ok">群已创建</span>${by}（已把所选机器人的 owner 一并拉进群） · <a href="${escapeHtml(link)}" target="_blank">在飞书打开</a>${invalid}${invOwners}`;
     } else {
       const e = b?.error || r.status;
-      const msg = e === 'no_online_daemon' ? '你这边没有在线的本地机器人来建群（建群必须由本部署的机器人发起，请至少勾选一个本部署的在线机器人）' : `建群失败：${e}`;
+      const msg = e === 'no_creator_available'
+        ? '没有可用的建群发起方：所选机器人所属的部署都没有在线机器人能建群，或对方部署不可达。请确保至少一方有在线机器人。'
+        : `建群失败：${e}`;
       out.innerHTML = `<span class="err">${escapeHtml(String(msg))}</span>`;
     }
   };
