@@ -2775,6 +2775,10 @@ async function cmdSend(rest: string[]): Promise<void> {
       crossRef = existsSync(crossRefPath)
         ? JSON.parse(readFileSync(crossRefPath, 'utf-8'))
         : {};
+      // --no-mention 显式不 @ 任何人：跳过正文 @BotName 的自动注入，否则正文里
+      // 出现的 @名字 仍会被注入成 <at>，破坏 --no-mention 语义、还可能误触发对方
+      // bot（正是要避免的循环 @）。botEntries/crossRef 仍需加载供 footer 寻址用。
+      if (!noMention) {
       const alreadyMentioned = new Set(mentions.map(m => m.open_id));
       // Sort by name length desc so longer names ("Claude分身") win over their
       // prefix ("Claude") when both could match — break-on-first-hit otherwise
@@ -2816,6 +2820,7 @@ async function cmdSend(rest: string[]): Promise<void> {
           alreadyMentioned.add(senderScopedId);
           break;
         }
+      }
       }
     } catch { /* best-effort */ }
 
