@@ -235,6 +235,14 @@ describe('codex buildArgs', () => {
     expect(idx).toBeGreaterThanOrEqual(0);
     expect(args[idx + 1]).toBe('gpt-5-codex');
   });
+
+  it('installs built-in skills into the global ~/.codex/skills dir', () => {
+    // Codex has no per-session skill injection (no --plugin-dir equivalent), so
+    // botmux installs into Codex's hard-coded global scan root. Pin it here so a
+    // future refactor can't silently drop the field and leave Codex skill-less.
+    expect(adapter.skillsDir).toBe('~/.codex/skills');
+    expect(adapter.pluginDir).toBeUndefined();
+  });
 });
 
 describe('codex-app buildArgs', () => {
