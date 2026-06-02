@@ -2111,6 +2111,7 @@ let pendingShotTimer: ReturnType<typeof setTimeout> | null = null;
 let lastShotHash = '';
 let larkAppIdForUpload = '';
 let larkAppSecretForUpload = '';
+let larkBrandForUpload: 'feishu' | 'lark' = 'feishu';
 
 function startScreenshotLoop(): void {
   stopScreenshotLoop();
@@ -2203,7 +2204,7 @@ async function captureAndUpload(): Promise<void> {
 
   let imageKey: string;
   try {
-    imageKey = await uploadImageBuffer(larkAppIdForUpload, larkAppSecretForUpload, png);
+    imageKey = await uploadImageBuffer(larkAppIdForUpload, larkAppSecretForUpload, png, larkBrandForUpload);
   } catch (err: any) {
     logError(`Screenshot upload failed: ${err?.message ?? err}`);
     return;
@@ -4048,6 +4049,8 @@ process.on('message', async (raw: unknown) => {
       // Capture credentials for direct image upload from worker
       larkAppIdForUpload = msg.larkAppId;
       larkAppSecretForUpload = msg.larkAppSecret;
+      // brand 决定截图上传打哪个域（feishu / larksuite）。缺省 feishu。
+      larkBrandForUpload = msg.brand === 'lark' ? 'lark' : 'feishu';
       // Resolve render dimensions BEFORE startScreenUpdates() — the
       // headless xterm and PNG canvas need to know the source pane size
       // up-front. Setting them later (after the renderer was built at
