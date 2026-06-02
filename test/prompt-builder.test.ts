@@ -56,7 +56,7 @@ vi.mock('../src/core/worker-pool.js', () => ({
 
 // ─── Imports ──────────────────────────────────────────────────────────────
 
-import { buildNewTopicPrompt, buildFollowUpContent, buildReforkPrompt, renderSenderTag } from '../src/core/session-manager.js';
+import { buildNewTopicPrompt, buildFollowUpContent, buildReforkPrompt, renderSenderTag, renderCursorSenderNote } from '../src/core/session-manager.js';
 import type { DaemonSession } from '../src/core/types.js';
 
 // ─── Tests ────────────────────────────────────────────────────────────────
@@ -199,6 +199,32 @@ describe('buildFollowUpContent', () => {
     expect(content).not.toContain('<botmux_reminder>');
     expect(content).not.toContain('botmux send');
   });
+
+  it('injects <sender_note> for cursor follow-ups carrying a sender', () => {
+    const content = buildFollowUpContent('hi', SESSION_ID, {
+      cliId: 'cursor',
+      sender: { openId: 'ou_gp', type: 'user', name: '高鹏' },
+    });
+    // The note must sit right after the <sender> tag so the model reads them together.
+    expect(content).toContain('<sender type="user" open_id="ou_gp" name="高鹏" />');
+    expect(content).toContain('<sender_note>');
+    expect(content).toContain('--mention-back');
+    expect(content.indexOf('<sender_note>')).toBeGreaterThan(content.indexOf('<sender '));
+  });
+
+  it('does NOT inject <sender_note> for non-cursor CLIs even with a sender', () => {
+    const content = buildFollowUpContent('hi', SESSION_ID, {
+      cliId: 'codex',
+      sender: { openId: 'ou_gp', type: 'user', name: '高鹏' },
+    });
+    expect(content).toContain('<sender '); // sender tag still present
+    expect(content).not.toContain('<sender_note>');
+  });
+
+  it('does NOT inject <sender_note> for cursor when there is no sender', () => {
+    const content = buildFollowUpContent('hi', SESSION_ID, { cliId: 'cursor' });
+    expect(content).not.toContain('<sender_note>');
+  });
 });
 
 // ─── buildReforkPrompt — wraps re-fork branch (resume / daemon-restart) ─────
@@ -330,6 +356,54 @@ describe('renderSenderTag', () => {
     // And the tag's outer quotes are not eaten by inner ones.
     expect(out.startsWith('<sender ')).toBe(true);
     expect(out.endsWith(' />')).toBe(true);
+  });
+});
+
+// ─── renderCursorSenderNote — cursor-only anti-echo guard ──────────────────
+
+describe('renderCursorSenderNote', () => {
+  it('returns the note only for cursor with a sender present', () => {
+    const out = renderCursorSenderNote('cursor', true);
+    expect(out).toContain('<sender_note>');
+    expect(out).toContain('--mention-back');
+  });
+
+  it('returns empty for cursor when no sender tag is present', () => {
+    expect(renderCursorSenderNote('cursor', false)).toBe('');
+  });
+
+  it('returns empty for every non-cursor CLI', () => {
+    for (const cli of ['claude-code', 'codex', 'gemini', 'opencode', 'coco', 'aiden'] as const) {
+      expect(renderCursorSenderNote(cli, true)).toBe('');
+    }
+  });
+
+  it('returns empty when cliId is undefined', () => {
+    expect(renderCursorSenderNote(undefined, true)).toBe('');
+  });
+});
+
+// ─── buildNewTopicPrompt cursor sender-note injection ───────────────────────
+
+describe('buildNewTopicPrompt cursor <sender_note>', () => {
+  it('adds <sender_note> for cursor new topics with a sender', () => {
+    const prompt = buildNewTopicPrompt(
+      'hello', 'sid', 'cursor',
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { openId: 'ou_gp', type: 'user', name: '高鹏' },
+    );
+    expect(prompt).toContain('<sender_note>');
+    expect(prompt.indexOf('<sender_note>')).toBeGreaterThan(prompt.indexOf('<sender '));
+  });
+
+  it('omits <sender_note> for codex new topics with the same sender', () => {
+    const prompt = buildNewTopicPrompt(
+      'hello', 'sid', 'codex',
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { openId: 'ou_gp', type: 'user', name: '高鹏' },
+    );
+    expect(prompt).toContain('<sender ');
+    expect(prompt).not.toContain('<sender_note>');
   });
 });
 

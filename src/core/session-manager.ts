@@ -188,6 +188,20 @@ export function renderSenderTag(sender?: ResolvedSender): string {
   return `<sender ${attrs.join(' ')} />`;
 }
 
+/**
+ * cursor-agent's model tends to copy the inlined `<sender open_id="ou_xxx"
+ * name="高鹏" />` verbatim into its reply — it reads `open_id:name` as the
+ * `--mention <open_id:name>` form and leaks `ou_xxx:高鹏` into the `botmux
+ * send` body / opening line. Other CLIs haven't shown this, so the guard is
+ * scoped to cursor only (claude-code et al. that set injectsSessionContext
+ * never see this inline tag anyway). Returns '' for every other CLI and when
+ * there is no sender tag to misread.
+ */
+export function renderCursorSenderNote(cliId: CliId | undefined, hasSender: boolean, locale?: Locale): string {
+  if (cliId !== 'cursor' || !hasSender) return '';
+  return `<sender_note>${t('ai.cursor.sender_note', undefined, locale)}</sender_note>`;
+}
+
 export function formatAttachmentsHint(attachments?: LarkAttachment[], locale?: Locale): string {
   if (!attachments || attachments.length === 0) return '';
   let imgN = 0, fileN = 0;
@@ -281,6 +295,9 @@ export function buildNewTopicPrompt(
   const senderBlock = renderSenderTag(sender);
   if (senderBlock) parts.push(senderBlock);
 
+  const senderNote = renderCursorSenderNote(cliId, !!senderBlock, locale);
+  if (senderNote) parts.push(senderNote);
+
   const attachHint = formatAttachmentsHint(attachments, locale);
   if (attachHint) parts.push(attachHint);
 
@@ -312,6 +329,9 @@ export function buildFollowUpContent(
 
   const senderBlock = renderSenderTag(opts?.sender);
   if (senderBlock) parts.push(senderBlock);
+
+  const senderNote = renderCursorSenderNote(opts?.cliId, !!senderBlock, opts?.locale);
+  if (senderNote) parts.push(senderNote);
 
   const attachHint = opts?.attachments && opts.attachments.length > 0
     ? formatAttachmentsHint(opts.attachments, opts.locale)

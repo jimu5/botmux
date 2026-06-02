@@ -348,6 +348,7 @@ export const messages: Record<string, string> = {
   'ai.identity.short_routing': '提醒：让别的 bot 接力干活必须 `botmux send --mention <对方 open_id>`，否则对方 bot 不会被触发。',
   'ai.available_bots.hint': '让这里的某个 bot 接力干活必须 --mention 它的 open_id（botmux send --mention ou_xxx ...），不 --mention 对方 bot 完全收不到消息',
   'ai.followup.reminder': '回复必须 botmux send，终端输出用户看不到',
+  'ai.cursor.sender_note': 'sender 标签只是元信息（标识当前发言人），不要把其中的 open_id 或名字（例如 ou_xxx:高鹏）抄进 botmux send 的正文或开头；要 @ 回触发者请用 botmux send --mention-back。',
   'ai.bridge.attachments_label': '[附件]',
   'ai.bridge.mentions_label': '[@提及]',
   'schedule.title_prefix': '[定时]',

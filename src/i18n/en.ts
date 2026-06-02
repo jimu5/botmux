@@ -345,6 +345,7 @@ export const messages: Record<string, string> = {
   'ai.identity.short_routing': 'Reminder: handing work off to another bot REQUIRES `botmux send --mention <their open_id>` — without it, the other bot is not triggered.',
   'ai.available_bots.hint': 'To hand work off to a bot listed here you MUST --mention its open_id (botmux send --mention ou_xxx ...). Without --mention the other bot receives nothing.',
   'ai.followup.reminder': 'Replies must go via `botmux send` — terminal output does not reach the user.',
+  'ai.cursor.sender_note': 'The sender tag is metadata identifying the current speaker — never copy its open_id or name (e.g. ou_xxx:Alice) into your botmux send body or opening line; to @ the triggerer use botmux send --mention-back.',
   'ai.bridge.attachments_label': '[Attachments]',
   'ai.bridge.mentions_label': '[@Mentions]',
   'schedule.title_prefix': '[Scheduled]',
