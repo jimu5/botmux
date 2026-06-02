@@ -3304,6 +3304,12 @@ function startWebServer(host: string, preferredPort?: number): Promise<number> {
         const cfgPath = ensureZellijAttachConfig();
         let cp: pty.IPty | null = null;
         const pendingInput: string[] = [];
+        // While this attach client is live, silence the ObserveBackend's
+        // dump-screen/list-panes pollers: each `zellij action` they run makes the
+        // server repaint every attached client, which flickers this client's
+        // chrome ~2×/s. Reference-counted across browser tabs by the backend.
+        const observeBe = backend instanceof ZellijObserveBackend ? backend : null;
+        let attachStarted = false;
 
         const startAttach = (cols: number, rows: number) => {
           if (cp) return;
@@ -3313,6 +3319,8 @@ function startWebServer(host: string, preferredPort?: number): Promise<number> {
             rows,
             env: zellijEnv() as { [key: string]: string },
           });
+          attachStarted = true;
+          observeBe?.setLiveAttach(true);
           clientPtys.set(ws, cp);
           cp.onData((d: string) => {
             if (ws.readyState === WebSocket.OPEN) ws.send(d);
@@ -3347,6 +3355,7 @@ function startWebServer(host: string, preferredPort?: number): Promise<number> {
         ws.on('close', () => {
           clearTimeout(spawnTimer);
           wsClients.delete(ws);
+          if (attachStarted) { observeBe?.setLiveAttach(false); attachStarted = false; }
           const existing = clientPtys.get(ws);
           if (existing) {
             try { existing.kill(); } catch { /* already dead */ }

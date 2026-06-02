@@ -45,6 +45,9 @@ export class ZellijObserveBackend implements ObserveBackend {
   private livenessTimer: ReturnType<typeof setInterval> | null = null;
   private lastSnapshot = '';
   private exited = false;
+  /** # of live web-terminal `zellij attach` clients currently connected. While
+   *  >0 the pollers go quiet — see setLiveAttach. */
+  private liveAttachCount = 0;
 
   // PtyHandle fields the worker may set (parallel to the other backends).
   claudeJsonlPath?: string;
@@ -80,12 +83,41 @@ export class ZellijObserveBackend implements ObserveBackend {
 
   private checkLiveness(): void {
     if (this.exited) return;
+    // While a live web-attach client is connected, skip the list-panes `action`
+    // (it makes the zellij server repaint every attached client → flicker). The
+    // pid syscall covers CLI exit; the attach PTY's own exit covers pane/session
+    // death, and full pane liveness resumes the moment the client detaches.
+    if (this.liveAttachCount > 0) {
+      if (!this.isCliPidAlive()) this.handlePaneExit();
+      return;
+    }
     // Two exit signals: (a) the pane vanished, (b) the adopted CLI pid is gone.
     // (b) is essential for user-typed CLIs: when the CLI exits, the pane drops
     // back to a shell and stays "alive", so a pane-only check would keep the
     // worker running and route subsequent Lark input INTO the user's shell.
     // Mirrors the pid guard the restore path already uses.
     if (!this.isPaneAlive() || !this.isCliPidAlive()) this.handlePaneExit();
+  }
+
+  /**
+   * Mark a live web-terminal `zellij attach` client as (dis)connected.
+   *
+   * Every `zellij action` the pollers run (dump-screen poll @700ms, list-panes
+   * liveness @1000ms) connects a transient client to the server, which makes the
+   * server repaint ALL attached clients — so an attached web client redraws its
+   * zellij chrome ~2×/s, i.e. the flicker 申晗 saw. While ≥1 attach client is up
+   * the dump-screen poll is redundant (the attach IS the live view) so we stop
+   * it, and liveness degrades to the churn-free pid syscall (see checkLiveness).
+   * Reference-counted so multiple browser tabs compose; resumes on the last one.
+   */
+  setLiveAttach(active: boolean): void {
+    this.liveAttachCount = Math.max(0, this.liveAttachCount + (active ? 1 : -1));
+    if (this.exited) return;
+    if (this.liveAttachCount > 0) {
+      if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+    } else if (!this.pollTimer) {
+      this.pollTimer = setInterval(() => this.poll(), POLL_MS);
+    }
   }
 
   /** Whether the adopted CLI process is still running. Unknown pid → defer to
