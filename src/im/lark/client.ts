@@ -522,6 +522,27 @@ export async function sendEphemeralCard(
   return messageId ?? '';
 }
 
+/**
+ * Text variant of {@link sendEphemeralCard} — for plain confirmation lines
+ * (restart / resume) shown only to the operator. Throws with
+ * {@link LARK_CODE_EPHEMERAL_NOT_GROUP} in topic groups / p2p so the caller can
+ * fall back to a normal (visible) reply.
+ */
+export async function sendEphemeralText(
+  larkAppId: string, chatId: string, openId: string, text: string,
+): Promise<string> {
+  const c = getBotClient(larkAppId);
+  const res: any = await (c as any).request({
+    method: 'POST',
+    url: '/open-apis/ephemeral/v1/send',
+    data: { chat_id: chatId, open_id: openId, msg_type: 'text', content: JSON.stringify({ text }) },
+  });
+  if (res.code !== 0) {
+    throw new Error(`Failed to send ephemeral text: ${res.msg} (code: ${res.code})`);
+  }
+  return res.data?.message_id ?? '';
+}
+
 export async function updateMessage(larkAppId: string, messageId: string, cardJson: string): Promise<void> {
   const c = getBotClient(larkAppId);
   let res: any;

@@ -22,7 +22,7 @@ import { createCliAdapterSync } from '../../adapters/cli/registry.js';
 import { logger } from '../../utils/logger.js';
 import * as sessionStore from '../../services/session-store.js';
 import { loadFrozenCards, saveFrozenCards } from '../../services/frozen-card-store.js';
-import { forkWorker, killWorker, scheduleCardPatch, parkStreamCard, clearUsageLimitState, cardUsageLimit, writableTerminalLinkFor, resolvePrivateCardAudience, deliverWriteLinkCard, CARD_POSTING_SENTINEL } from '../../core/worker-pool.js';
+import { forkWorker, killWorker, scheduleCardPatch, parkStreamCard, clearUsageLimitState, cardUsageLimit, writableTerminalLinkFor, resolvePrivateCardAudience, deliverWriteLinkCard, deliverEphemeralOrReply, CARD_POSTING_SENTINEL } from '../../core/worker-pool.js';
 import { getSessionWorkingDir, buildNewTopicPrompt, getAvailableBots, persistStreamCardState, resumeSession, rememberLastCliInput } from '../../core/session-manager.js';
 import type { DaemonToWorker, DisplayMode, TermActionKey } from '../../types.js';
 import { sessionKey, sessionAnchorId, frozenDisplayMode } from '../../core/types.js';
@@ -567,12 +567,14 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
         logger.info(`[${tag(ds)}] Restart via card button`);
         ds.worker.send({ type: 'restart' } as DaemonToWorker);
         const cliName = getCliDisplayName(effectiveCliId);
-        await sessionReply(rootId, t('card.action.restarted', { cliName }, locDs));
+        const restartedMsg = t('card.action.restarted', { cliName }, locDs);
+        await deliverEphemeralOrReply(ds, operatorOpenId, restartedMsg, 'text', () => sessionReply(rootId, restartedMsg));
       } else {
         logger.info(`[${tag(ds)}] Re-forking worker via card button`);
         forkWorker(ds, '', ds.hasHistory);
         const cliName = getCliDisplayName(effectiveCliId);
-        await sessionReply(rootId, t('card.action.restarted_fresh', { cliName }, locDs));
+        const restartedFreshMsg = t('card.action.restarted_fresh', { cliName }, locDs);
+        await deliverEphemeralOrReply(ds, operatorOpenId, restartedFreshMsg, 'text', () => sessionReply(rootId, restartedFreshMsg));
         // DM card will be sent by the ready handler when worker starts
       }
     }
@@ -620,7 +622,7 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
         }
         logger.info(`[${tag(ds)}] Closed via card button (private close card → ${audience.length} owner(s))`);
       } else {
-        await sessionReply(rootId, card, 'interactive');
+        await deliverEphemeralOrReply(ds, operatorOpenId, card, 'interactive', () => sessionReply(rootId, card, 'interactive'));
         logger.info(`[${tag(ds)}] Closed via card button`);
       }
     }
@@ -634,7 +636,8 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
         const result = await resumeSession(targetSessionId, activeSessions);
         if (result.ok) {
           const cliName = getCliDisplayName(result.ds.session.cliId ?? getBot(result.ds.larkAppId).config.cliId);
-          await sessionReply(rootId, t('card.action.resume_success', { cliName }, localeForBot(result.ds.larkAppId)));
+          const resumeMsg = t('card.action.resume_success', { cliName }, localeForBot(result.ds.larkAppId));
+          await deliverEphemeralOrReply(result.ds, operatorOpenId, resumeMsg, 'text', () => sessionReply(rootId, resumeMsg));
           logger.info(`[${targetSessionId.substring(0, 8)}] Resumed via card button`);
         } else if (result.error === 'not_found') {
           await sessionReply(rootId, t('card.action.resume_not_found', { short: targetSessionId.substring(0, 8) }, locDsResume));

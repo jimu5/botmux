@@ -14,7 +14,7 @@ import { randomBytes } from 'node:crypto';
 import { config } from '../config.js';
 import * as sessionStore from '../services/session-store.js';
 import { persistStreamCardState } from './session-manager.js';
-import { updateMessage, deleteMessage, sendEphemeralCard, sendUserMessage, addReaction, MessageWithdrawnError } from '../im/lark/client.js';
+import { updateMessage, deleteMessage, sendEphemeralCard, sendEphemeralText, sendUserMessage, addReaction, MessageWithdrawnError } from '../im/lark/client.js';
 import { buildStreamingCard, buildPrivateSnapshotCard, buildSessionCard, buildTuiPromptCard, buildTuiPromptResolvedCard, buildRelayedFrozenCard, getCliDisplayName } from '../im/lark/card-builder.js';
 import { loadFrozenCards, saveFrozenCards } from '../services/frozen-card-store.js';
 import { clearPendingResponsePatchMarker, markPendingResponsePatchMarkerPatched, writePendingResponsePatchMarker } from '../services/pending-response-transaction-store.js';
@@ -540,6 +540,33 @@ export async function deliverWriteLinkCard(
     logger.warn(`[${tag(ds)}] failed to deliver write link (ephemeral + DM both failed): ${err}`);
     return 'failed';
   }
+}
+
+/**
+ * Deliver a status confirmation (restart / session-closed / resume) as a
+ * "visible-to-the-operator-only" ephemeral message in a plain group; on failure
+ * (topic groups reject with 18053) or in p2p, fall back to the normal visible
+ * reply (`reply`). `content` is the card JSON when msgType==='interactive',
+ * otherwise the plain text. Topic-group / p2p behavior is unchanged.
+ */
+export async function deliverEphemeralOrReply(
+  ds: DaemonSession,
+  operatorOpenId: string | undefined,
+  content: string,
+  msgType: 'text' | 'interactive',
+  reply: () => Promise<unknown>,
+): Promise<void> {
+  if (operatorOpenId && ds.chatType !== 'p2p') {
+    try {
+      if (msgType === 'interactive') await sendEphemeralCard(ds.larkAppId, ds.chatId, operatorOpenId, content);
+      else await sendEphemeralText(ds.larkAppId, ds.chatId, operatorOpenId, content);
+      return;
+    } catch (err) {
+      // Topic groups (18053) / other → not ephemeral-capable here; reply visibly.
+      logger.info(`[${tag(ds)}] ephemeral confirmation unavailable here (${err}); sending visibly`);
+    }
+  }
+  await reply();
 }
 
 // ─── Card PATCH serialization queue ─────────────────────────────────────────
