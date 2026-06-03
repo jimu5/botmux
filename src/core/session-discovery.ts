@@ -55,6 +55,14 @@ const CLI_COMM_MAP: Record<string, CliId> = {
   hermes: 'hermes',
 };
 
+/** Interpreters and native launchers that may hide the CLI identity in argv.
+ *  Cursor Agent is one example on Linux: /proc/<pid>/comm can be `MainThread`
+ *  while argv[0] is `/.../cursor-agent` or `/.../agent`. */
+const COMM_ARGV_LAUNCHERS = new Set([
+  'node', 'nodejs', 'bun', 'deno', 'python', 'python2', 'python3', 'ruby', 'npx', 'tsx',
+  'MainThread',
+]);
+
 export function cliIdForComm(comm: string, filterCliId?: CliId): CliId | undefined {
   const normalizedComm = comm.startsWith('.') ? comm.slice(1) : comm;
   const direct = CLI_COMM_MAP[comm] ?? CLI_COMM_MAP[normalizedComm];
@@ -67,6 +75,37 @@ export function cliIdForComm(comm: string, filterCliId?: CliId): CliId | undefin
   // process as MTR so the bot's filter does not hide its own sessions.
   if (filterCliId === 'mtr' && direct === 'opencode') return 'mtr';
   return direct;
+}
+
+/** /proc/<pid>/cmdline → argv (Linux fast path; ps fallback for macOS). */
+export function readCmdline(pid: number): string[] {
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`, 'utf-8').split('\0').filter(Boolean);
+  } catch {
+    try {
+      const out = execFileSync('ps', ['-o', 'args=', '-p', String(pid)], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+      return out.trim().split(/\s+/).filter(Boolean);
+    } catch { return []; }
+  }
+}
+
+/**
+ * Resolve a CliId from a process's comm + argv. Checks comm first; if the comm
+ * belongs to a generic launcher, scan argv for the CLI executable basename.
+ */
+export function cliIdFromCommArgv(comm: string | undefined, argv: string[], filterCliId?: CliId): CliId | undefined {
+  if (!comm) return undefined;
+  let detected = cliIdForComm(comm, filterCliId);
+  if (!detected && COMM_ARGV_LAUNCHERS.has(comm)) {
+    for (const arg of argv) {
+      if (arg.startsWith('-')) continue;
+      const id = cliIdForComm(basename(arg), filterCliId);
+      if (id) { detected = id; break; }
+    }
+  }
+  if (!detected) return undefined;
+  if (filterCliId && detected !== filterCliId) return undefined;
+  return detected;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -192,7 +231,7 @@ function findCliProcess(
     for (const pid of current) {
       const comm = readComm(pid);
       if (comm) {
-        const cliId = cliIdForComm(comm, filterCliId);
+        const cliId = cliIdFromCommArgv(comm, readCmdline(pid), filterCliId);
         if (cliId) return { pid, cliId };
       }
       next.push(...getChildPids(pid));

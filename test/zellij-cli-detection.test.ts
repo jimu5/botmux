@@ -20,6 +20,8 @@ describe('cliIdFromCommArgv', () => {
     expect(cliIdFromCommArgv('agent', ['agent'], 'cursor')).toBe('cursor');
     expect(cliIdFromCommArgv('node', ['node', '/home/u/.local/bin/agent'])).toBeUndefined();
     expect(cliIdFromCommArgv('node', ['node', '/home/u/.local/bin/agent'], 'cursor')).toBe('cursor');
+    expect(cliIdFromCommArgv('MainThread', ['/home/u/.local/bin/agent'], 'cursor')).toBe('cursor');
+    expect(cliIdFromCommArgv('MainThread', ['/home/u/.local/bin/agent'])).toBeUndefined();
   });
 
   it('skips flags when scanning argv', () => {

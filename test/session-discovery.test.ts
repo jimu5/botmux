@@ -48,6 +48,7 @@ const mockReaddirSync = vi.mocked(readdirSync);
  * commMap: pid → comm name
  * cwdMap: pid → cwd path
  * childMap: pid → child pids
+ * cmdlineMap: pid → argv list for /proc/<pid>/cmdline
  * dimsMap: tmuxTarget → "cols rows"
  * claudeMeta: pid → JSON string of session metadata
  */
@@ -56,6 +57,7 @@ function setupMocks(opts: {
   commMap?: Record<number, string>;
   cwdMap?: Record<number, string>;
   childMap?: Record<number, number[]>;
+  cmdlineMap?: Record<number, string[]>;
   dimsMap?: Record<string, string>;
   claudeMeta?: Record<number, string>;
   /** pid → ordered list of /proc/<pid>/fd/<n> symlink target strings.
@@ -63,7 +65,7 @@ function setupMocks(opts: {
    *  Pass `'<path> (deleted)'` suffix to simulate procfs's deleted-inode marker. */
   procFdMap?: Record<number, string[]>;
 }) {
-  const { paneLines, commMap = {}, cwdMap = {}, childMap = {}, dimsMap = {}, claudeMeta = {}, procFdMap = {} } = opts;
+  const { paneLines, commMap = {}, cwdMap = {}, childMap = {}, cmdlineMap = {}, dimsMap = {}, claudeMeta = {}, procFdMap = {} } = opts;
 
   // Replace blanket existsSync / readdirSync mocks with procFdMap-aware ones.
   mockExistsSync.mockImplementation((path: unknown) => {
@@ -135,6 +137,14 @@ function setupMocks(opts: {
     if (commMatch) {
       const pid = Number(commMatch[1]);
       if (pid in commMap) return commMap[pid] + '\n';
+      throw new Error('ENOENT');
+    }
+
+    // /proc/<pid>/cmdline
+    const cmdlineMatch = pathStr.match(/\/proc\/(\d+)\/cmdline/);
+    if (cmdlineMatch) {
+      const pid = Number(cmdlineMatch[1]);
+      if (pid in cmdlineMap) return cmdlineMap[pid]!.join('\0') + '\0';
       throw new Error('ENOENT');
     }
 
@@ -246,8 +256,9 @@ describe('discoverAdoptableSessions', () => {
   it('should treat generic agent as Cursor only for Cursor-filtered adoption', () => {
     setupMocks({
       paneLines: 'cursor:0.0 1000\n',
-      commMap: { 1000: 'zsh', 1001: 'agent' },
+      commMap: { 1000: 'zsh', 1001: 'MainThread' },
       childMap: { 1000: [1001] },
+      cmdlineMap: { 1001: ['/home/user/.local/bin/agent', '--model', 'gpt-5.5-extra-high'] },
       cwdMap: { 1001: '/workspace/cursor' },
       dimsMap: { 'cursor:0.0': '160 50' },
     });
