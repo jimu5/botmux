@@ -34,7 +34,7 @@ import { t, localeForBot, type Locale } from '../i18n/index.js';
 
 // ─── Exported constants ──────────────────────────────────────────────────────
 
-export const DAEMON_COMMANDS = new Set(['/close', '/restart', '/status', '/help', '/cd', '/repo', '/schedule', '/role', '/pair', '/login', '/adopt', '/oncall', '/group', '/g', '/relay', '/card']);
+export const DAEMON_COMMANDS = new Set(['/close', '/restart', '/status', '/help', '/cd', '/repo', '/schedule', '/role', '/pair', '/login', '/adopt', '/detach', '/disconnect', '/oncall', '/group', '/g', '/relay', '/card']);
 
 /**
  * Daemon commands that act on the chat itself rather than opening a
@@ -541,6 +541,28 @@ export async function handleCommand(
         } else {
           await sessionReply(rootId, t('cmd.no_active_session', undefined, loc));
         }
+        break;
+      }
+
+      case '/detach':
+      case '/disconnect': {
+        // 文字版的"⏏ 断开"按钮：仅 adopt 会话适用——botmux 只是观察用户原本在
+        // 跑的 CLI，断开只清掉 botmux 这一侧的 worker / polling，绝不结束 CLI
+        // 进程本身。等价于 card-handler 里 `actionType === 'disconnect'` 那段。
+        if (!ds) {
+          await sessionReply(rootId, t('cmd.no_active_session', undefined, loc));
+          break;
+        }
+        if (!ds.adoptedFrom) {
+          await sessionReply(rootId, t('cmd.detach.not_adopted', undefined, loc));
+          break;
+        }
+        const closedSessionId = ds.session.sessionId;
+        killWorker(ds);
+        sessionStore.closeSession(closedSessionId);
+        activeSessions.delete(sessionKey(rootId, larkAppId!));
+        await sessionReply(rootId, t('cmd.detach.success', undefined, loc));
+        logger.info(`[${logTag}] Detached (adopt) by ${cmd} command`);
         break;
       }
 
@@ -1702,6 +1724,7 @@ export async function handleCommand(
           t('help.heading_adopt', undefined, loc),
           t('help.adopt', undefined, loc),
           t('help.adopt_pane', undefined, loc),
+          t('help.detach', undefined, loc),
           '',
           t('help.heading_login', undefined, loc),
           t('help.login', undefined, loc),
