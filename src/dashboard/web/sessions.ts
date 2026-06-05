@@ -1,6 +1,22 @@
-// Sessions page: filter bar, table, detail drawer with locate/resume/close.
+// Sessions page: filter bar, status board/table, detail drawer with locate/resume/close.
+import {
+  readStoredBoardOrder,
+  readStoredSessionsViewMode,
+  type SessionsViewMode,
+  writeStoredBoardOrder,
+  writeStoredSessionsViewMode,
+} from './preferences.js';
 import { store } from './store.js';
-import { escapeHtml, relTime, t } from './ui.js';
+import {
+  botDisplayName,
+  botOrbStyle,
+  chatDisplayTitle,
+  escapeHtml,
+  loadNameMaps,
+  relTime,
+  stripMentionPrefix,
+  t,
+} from './ui.js';
 
 function th(sort: string, label: string): string {
   return `<th data-sort="${sort}" data-label="${escapeHtml(label)}">${escapeHtml(label)}</th>`;
@@ -24,16 +40,55 @@ const CLI_FILTER_OPTIONS = [
   'unknown',
 ];
 
+type BoardColumnId = 'needs-you' | 'starting' | 'working' | 'idle';
+
+const BOARD_COLUMNS: Array<{ id: BoardColumnId; labelKey: string; hintKey: string }> = [
+  { id: 'needs-you', labelKey: 'sessions.board.needsYou', hintKey: 'sessions.board.needsYouHint' },
+  { id: 'starting', labelKey: 'sessions.board.starting', hintKey: 'sessions.board.startingHint' },
+  { id: 'working', labelKey: 'sessions.board.working', hintKey: 'sessions.board.workingHint' },
+  { id: 'idle', labelKey: 'sessions.board.idle', hintKey: 'sessions.board.idleHint' },
+];
+
+function cssToken(value: unknown): string {
+  return String(value ?? 'unknown').toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+}
+
+function repoBasename(workingDir: unknown): string {
+  const value = String(workingDir ?? '').trim();
+  if (!value) return '-';
+  const parts = value.replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts.at(-1) ?? value;
+}
+
+function terminalHref(s: any): string | null {
+  if (!s.webPort) return null;
+  const port = s.proxyPort ?? s.webPort;
+  const suffix = s.proxyPort ? `/s/${encodeURIComponent(s.sessionId)}` : '';
+  return `http://${location.hostname}:${port}${suffix}`;
+}
+
+function deriveSessionBoardColumn(s: any): BoardColumnId | null {
+  if (s.status === 'closed') return null;
+  if (s.pendingRepo || s.tuiPromptActive || s.status === 'limited') return 'needs-you';
+  if (s.status === 'starting') return 'starting';
+  if (s.status === 'working' || s.status === 'analyzing' || s.status === 'active') return 'working';
+  return 'idle';
+}
+
+// CLI 多选收进一个下拉 chip：默认全选时只占一个胶囊位，点开才展开
+// 全部选项，避免 15 个 checkbox 铺满一整行。
 export function renderCliFilterGroup(): string {
-  return `<div class="filter-check-group" role="group" aria-label="${t('sessions.cli')}">
-    <span class="filter-check-label">${t('sessions.cli')}</span>
-    ${CLI_FILTER_OPTIONS.map(cli => `
-      <label class="filter-check">
-        <input type="checkbox" name="cli" value="${escapeHtml(cli)}" checked>
-        <span>${escapeHtml(cli)}</span>
-      </label>
-    `).join('')}
-  </div>`;
+  return `<details class="filter-cli">
+    <summary>${t('sessions.cli')} · <b id="cli-filter-count">${t('common.all')}</b></summary>
+    <div class="filter-cli-pop" role="group" aria-label="${t('sessions.cli')}">
+      ${CLI_FILTER_OPTIONS.map(cli => `
+        <label class="filter-check">
+          <input type="checkbox" name="cli" value="${escapeHtml(cli)}" checked>
+          <span>${escapeHtml(cli)}</span>
+        </label>
+      `).join('')}
+    </div>
+  </details>`;
 }
 
 function pageHtml(): string {
@@ -43,6 +98,10 @@ function pageHtml(): string {
         <p class="eyebrow">${t('nav.sessions')}</p>
         <h1>${t('sessions.title')}</h1>
         <p>${t('sessions.subtitle')}</p>
+      </div>
+      <div class="segmented sessions-view-toggle" role="group" aria-label="${t('sessions.viewMode')}">
+        <button type="button" data-view="board">${t('sessions.viewBoard')}</button>
+        <button type="button" data-view="table">${t('sessions.viewTable')}</button>
       </div>
     </div>
     <form id="filters" class="filters sessions-filters">
@@ -57,8 +116,8 @@ function pageHtml(): string {
         <option value="yes">${t('sessions.adoptYes')}</option>
         <option value="no">${t('sessions.adoptNo')}</option>
       </select>
-      <label class="filter-toggle"><input type="checkbox" name="active" checked> ${t('sessions.activeOnly')}</label>
       ${renderCliFilterGroup()}
+      <label class="filter-toggle"><input type="checkbox" name="active" checked> <span>${t('sessions.activeOnly')}</span></label>
     </form>
     <div id="bulk-bar" class="bulk-bar" hidden>
       <span id="bulk-count"></span>
@@ -80,6 +139,7 @@ function pageHtml(): string {
       </tr></thead>
       <tbody></tbody>
     </table>
+    <div id="sessions-board" class="sessions-board" hidden></div>
     <dialog id="drawer"></dialog>
   </section>`;
 }
@@ -95,26 +155,165 @@ export function renderSessionsPage(root: HTMLElement) {
   const bulkCloseBtn = root.querySelector<HTMLButtonElement>('#bulk-close')!;
   const bulkClearBtn = root.querySelector<HTMLButtonElement>('#bulk-clear')!;
   const table = root.querySelector<HTMLTableElement>('#sessions-table')!;
+  const board = root.querySelector<HTMLElement>('#sessions-board')!;
+  const viewButtons = root.querySelectorAll<HTMLButtonElement>('[data-view]');
 
   const selected = new Set<string>();
   let sortKey = 'lastMessageAt';
   let sortDir: 'asc' | 'desc' = 'desc';
+  let viewMode: SessionsViewMode = readStoredSessionsViewMode(window.localStorage);
+  // 列顺序用户可调（拖列头 / ‹› 按钮），localStorage 持久化
+  let boardOrder: string[] = readStoredBoardOrder(window.localStorage);
+  let dragColId: string | null = null;
+  // 防闪烁：上次渲染的 HTML 快照（内容没变就跳过 innerHTML），以及
+  // 入场动画是否已播过（只在首次渲染播一轮）。
+  let lastBoardHtml = '';
+  let lastTableHtml = '';
+  let boardAnimated = false;
+
+  function orderedBoardColumns() {
+    return boardOrder
+      .map(id => BOARD_COLUMNS.find(c => c.id === id))
+      .filter((c): c is typeof BOARD_COLUMNS[number] => !!c);
+  }
+
+  function moveColumn(id: string, delta: number): void {
+    const from = boardOrder.indexOf(id);
+    const to = from + delta;
+    if (from < 0 || to < 0 || to >= boardOrder.length) return;
+    const next = [...boardOrder];
+    next.splice(from, 1);
+    next.splice(to, 0, id);
+    boardOrder = next;
+    writeStoredBoardOrder(window.localStorage, boardOrder);
+    rerender();
+  }
+
+  function moveColumnTo(id: string, targetId: string): void {
+    if (id === targetId) return;
+    const from = boardOrder.indexOf(id);
+    const to = boardOrder.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    const next = [...boardOrder];
+    next.splice(from, 1);
+    next.splice(to, 0, id);
+    boardOrder = next;
+    writeStoredBoardOrder(window.localStorage, boardOrder);
+    rerender();
+  }
 
   function rowHtml(s: any): string {
     const closed = s.status === 'closed';
     const checked = selected.has(s.sessionId) ? 'checked' : '';
     return `<tr data-id="${escapeHtml(s.sessionId)}">
       <td><input type="checkbox" class="row-select" ${checked} ${closed ? 'disabled' : ''}></td>
-      <td>${escapeHtml(s.botName ?? '')}</td>
-      <td><span class="badge cli-${escapeHtml(s.cliId ?? 'unknown')}">${escapeHtml(s.cliId ?? 'unknown')}</span></td>
+      <td>${escapeHtml(botDisplayName(s))}</td>
+      <td><span class="badge cli-${cssToken(s.cliId)}">${escapeHtml(s.cliId ?? 'unknown')}</span></td>
       <td><span class="status status-${escapeHtml(s.status ?? 'unknown')}">${escapeHtml(s.status ?? 'unknown')}</span></td>
-      <td>${escapeHtml((s.title ?? '').slice(0, 48))}</td>
+      <td title="${escapeHtml(String(s.title ?? ''))}">${escapeHtml(stripMentionPrefix(s.title ?? '').slice(0, 48))}</td>
       <td title="${escapeHtml(s.workingDir ?? '')}">${escapeHtml((s.workingDir ?? '').slice(-34))}</td>
       <td>${relTime(s.spawnedAt)}</td>
       <td>${relTime(s.lastMessageAt)}</td>
       <td>${s.adopt ? '<span class="badge">adopt</span>' : ''}</td>
       <td><button class="open" type="button">${t('sessions.details')}</button></td>
     </tr>`;
+  }
+
+  // chat-scope（普通群/单聊平铺回复）没有话题可定位——「定位话题」换成直接
+  // 打开群聊的 applink。旧 daemon 上报的行没有 scope 字段，保持定位行为。
+  function chatScopeLink(s: any): string | null {
+    if (s.scope !== 'chat' || !s.feishuChatLink) return null;
+    return `<a class="btn-link" href="${escapeHtml(s.feishuChatLink)}" target="_blank" rel="noopener">${t('sessions.openChat')}</a>`;
+  }
+
+  function boardSignalLabel(s: any): string {
+    if (s.pendingRepo) return t('sessions.board.signalRepo');
+    if (s.tuiPromptActive) return t('sessions.board.signalPrompt');
+    if (s.status === 'limited') return t('sessions.board.signalLimited');
+    return '';
+  }
+
+  function boardCardHtml(s: any): string {
+    const isSelected = selected.has(s.sessionId);
+    // title 剥掉开头的 "@bot" mention，只留消息内容；副行的群聊名比 cliId 更
+    // 有辨识度（同一 bot 可能在多个群干活），查不到群名时回退 cliId。
+    const title = stripMentionPrefix(s.title) || s.sessionId;
+    const botName = botDisplayName(s);
+    const chatTitle = chatDisplayTitle(s);
+    const terminal = terminalHref(s);
+    const signal = boardSignalLabel(s);
+    return `<article class="session-card${isSelected ? ' selected' : ''}" data-id="${escapeHtml(s.sessionId)}" aria-pressed="${isSelected}">
+      <div class="session-card-top">
+        <span class="orb-avatar orb-avatar-sm" style="${botOrbStyle(botName)}" aria-hidden="true"></span>
+        <div class="session-card-title">
+          <strong title="${escapeHtml(String(s.title ?? title))}">${escapeHtml(String(title).slice(0, 72))}</strong>
+          <span>${escapeHtml(botName)} · ${escapeHtml(chatTitle ?? s.cliId ?? 'unknown')}</span>
+        </div>
+        <span class="status status-${escapeHtml(s.status ?? 'unknown')}">${escapeHtml(s.status ?? 'unknown')}</span>
+      </div>
+      <div class="session-card-meta">
+        <span title="${escapeHtml(s.workingDir ?? '')}">${escapeHtml(repoBasename(s.workingDir))}</span>
+        ${s.adopt ? '<span class="badge">adopt</span>' : ''}
+      </div>
+      <div class="session-card-time">
+        <span>${escapeHtml(t('sessions.last'))}: ${relTime(s.lastMessageAt)}</span>
+        ${signal ? `<span class="session-signal">${escapeHtml(signal)} · ${relTime(s.lastMessageAt)}</span>` : ''}
+      </div>
+      <div class="session-card-actions">
+        ${chatScopeLink(s) ?? `<button type="button" data-action="locate">${t('sessions.locate')}</button>`}
+        <button type="button" data-action="details">${t('sessions.details')}</button>
+        ${terminal ? `<a class="btn-link primary" href="${escapeHtml(terminal)}" target="_blank" rel="noopener">${t('sessions.openTerminal')}</a>` : ''}
+        <button type="button" class="contrast" data-action="close">${t('sessions.close')}</button>
+      </div>
+    </article>`;
+  }
+
+  function compareBoardRows(a: any, b: any, column: BoardColumnId): number {
+    const av = Number(a.lastMessageAt ?? 0);
+    const bv = Number(b.lastMessageAt ?? 0);
+    if (av !== bv) return column === 'needs-you' ? av - bv : bv - av;
+    return String(a.title ?? a.sessionId).localeCompare(String(b.title ?? b.sessionId));
+  }
+
+  function renderBoard(rows: any[]): void {
+    const groups = new Map<BoardColumnId, any[]>(BOARD_COLUMNS.map(c => [c.id, []]));
+    for (const row of rows) {
+      const column = deriveSessionBoardColumn(row);
+      if (column) groups.get(column)!.push(row);
+    }
+    const columns = orderedBoardColumns();
+    const html = columns.map((column, idx) => {
+      const columnRows = (groups.get(column.id) ?? []).sort((a, b) => compareBoardRows(a, b, column.id));
+      return `<section class="session-board-column session-board-${column.id}" data-col="${column.id}">
+        <header draggable="true" title="${escapeHtml(t('sessions.board.dragHint'))}">
+          <div>
+            <h2>${escapeHtml(t(column.labelKey))}</h2>
+            <p>${escapeHtml(t(column.hintKey))}</p>
+          </div>
+          <span class="session-board-head-right">
+            <span class="session-board-move">
+              <button type="button" data-move-col="${column.id}" data-dir="-1"
+                aria-label="${escapeHtml(t('sessions.board.moveLeft'))}" ${idx === 0 ? 'disabled' : ''}>‹</button>
+              <button type="button" data-move-col="${column.id}" data-dir="1"
+                aria-label="${escapeHtml(t('sessions.board.moveRight'))}" ${idx === columns.length - 1 ? 'disabled' : ''}>›</button>
+            </span>
+            <span class="session-board-count">${columnRows.length}</span>
+          </span>
+        </header>
+        <div class="session-board-list">
+          ${columnRows.length ? columnRows.map(boardCardHtml).join('') : `<div class="session-board-empty">${t('sessions.board.emptyColumn')}</div>`}
+        </div>
+      </section>`;
+    }).join('');
+    // SSE 事件（心跳/无关字段 patch）远多于真正的可见变化——内容没变就不碰
+    // DOM，避免 backdrop-blur 面板整板重排造成的闪烁。
+    if (html === lastBoardHtml) return;
+    lastBoardHtml = html;
+    board.innerHTML = html;
+    // 入场动画只在看板第一次画出来时播一轮（.board-enter），之后的状态更新
+    // 重绘不再整板重播——那就是「每次状态更新页面闪一下」的来源。
+    board.classList.toggle('board-enter', !boardAnimated);
+    boardAnimated = true;
   }
 
   function filtered(): any[] {
@@ -178,35 +377,129 @@ export function renderSessionsPage(root: HTMLElement) {
     selectAllBox.indeterminate = selectedInView > 0 && selectedInView < selectable.length;
   }
 
+  function paintViewToggle(): void {
+    viewButtons.forEach(btn => {
+      const active = btn.dataset.view === viewMode;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', String(active));
+    });
+  }
+
+  // CLI 下拉 chip 上的已选计数：全选时显示「全部」，否则显示 N/总数
+  function paintCliFilterCount(): void {
+    const countEl = filtersForm.querySelector<HTMLElement>('#cli-filter-count');
+    if (!countEl) return;
+    const boxes = [...filtersForm.querySelectorAll<HTMLInputElement>('input[name="cli"]')];
+    const checked = boxes.filter(b => b.checked).length;
+    countEl.textContent = checked === boxes.length ? t('common.all') : `${checked}/${boxes.length}`;
+    countEl.classList.toggle('cli-filter-active', checked !== boxes.length);
+  }
+
   function rerender(): void {
     const rows = filtered();
     for (const sid of [...selected]) {
       const s = store.sessions.get(sid);
       if (!s || s.status === 'closed') selected.delete(sid);
     }
-    tbody.innerHTML = rows.length
-      ? rows.map(rowHtml).join('')
-      : `<tr><td colspan="10" class="empty">${t('sessions.empty')}</td></tr>`;
+    const boardRows = rows.filter(r => r.status !== 'closed');
+    const visibleRows = viewMode === 'board' ? boardRows : rows;
+    table.hidden = viewMode !== 'table';
+    board.hidden = viewMode !== 'board';
+    if (viewMode === 'table') {
+      const tableHtml = rows.length
+        ? rows.map(rowHtml).join('')
+        : `<tr><td colspan="10" class="empty">${t('sessions.empty')}</td></tr>`;
+      if (tableHtml !== lastTableHtml) {
+        lastTableHtml = tableHtml;
+        tbody.innerHTML = tableHtml;
+      }
+    } else {
+      renderBoard(boardRows);
+    }
+    paintViewToggle();
     paintSortHeaders();
-    syncBulkUi(rows);
+    paintCliFilterCount();
+    syncBulkUi(visibleRows);
+  }
+
+  async function locateSession(s: any, locateBtn?: HTMLButtonElement): Promise<void> {
+    if (locateBtn) {
+      locateBtn.disabled = true;
+      locateBtn.textContent = t('sessions.locating');
+    }
+    try {
+      const r = await fetch(`/api/sessions/${encodeURIComponent(s.sessionId)}/locate`, { method: 'POST' });
+      const body = await r.json();
+      if (body.ok) {
+        if (!locateBtn) return;
+        let left = 30;
+        locateBtn.textContent = t('sessions.cooldown', { seconds: left });
+        const tick = setInterval(() => {
+          left -= 1;
+          if (left <= 0) {
+            clearInterval(tick);
+            locateBtn.disabled = false;
+            locateBtn.textContent = t('sessions.locate');
+          } else {
+            locateBtn.textContent = t('sessions.cooldown', { seconds: left });
+          }
+        }, 1000);
+      } else {
+        alert(`Locate failed: ${body.error ?? r.status}`);
+        if (locateBtn) {
+          locateBtn.disabled = false;
+          locateBtn.textContent = t('sessions.locate');
+        }
+      }
+    } catch (e) {
+      alert(`Locate error: ${e}`);
+      if (locateBtn) {
+        locateBtn.disabled = false;
+        locateBtn.textContent = t('sessions.locate');
+      }
+    }
+  }
+
+  async function closeSession(s: any, closeBtn?: HTMLButtonElement): Promise<boolean> {
+    if (!confirm(t('sessions.closeConfirm'))) return false;
+    if (closeBtn) closeBtn.disabled = true;
+    try {
+      // 与批量关闭同口径：401（只读访客）/ 5xx 都不能当成功——否则抽屉
+      // 静默关闭、board 重绘，用户以为关掉了。401 的提示由全局 fetch
+      // patch 弹只读 toast，这里只负责不误报成功。
+      const r = await fetch(`/api/sessions/${encodeURIComponent(s.sessionId)}/close`, { method: 'POST' });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok || body?.ok === false) {
+        if (r.status !== 401) alert(`Close failed: ${body?.error ?? r.status}`);
+        return false;
+      }
+      return true;
+    } catch (e) {
+      alert(`Close error: ${e}`);
+      return false;
+    } finally {
+      if (closeBtn) closeBtn.disabled = false;
+    }
   }
 
   function openDrawer(s: any): void {
     const closed = s.status === 'closed';
+    const terminal = terminalHref(s);
     drawer.innerHTML = `<article>
       <header>
-        <h3>${escapeHtml(s.title ?? s.sessionId)}</h3>
+        <h3>${escapeHtml(stripMentionPrefix(s.title) || s.sessionId)}</h3>
         <span class="status status-${escapeHtml(s.status ?? 'unknown')}">${escapeHtml(s.status ?? 'unknown')}</span>
         <p><code>${escapeHtml(s.sessionId)}</code> <button data-copy="${escapeHtml(s.sessionId)}">${t('sessions.copy')}</button></p>
       </header>
-      <p><b>${t('sessions.bot')}:</b> ${escapeHtml(s.botName ?? '-')} · <b>${t('sessions.cli')}:</b> ${escapeHtml(s.cliId ?? '?')}</p>
+      <p><b>${t('sessions.bot')}:</b> ${escapeHtml(botDisplayName(s))} · <b>${t('sessions.cli')}:</b> ${escapeHtml(s.cliId ?? '?')}</p>
+      ${chatDisplayTitle(s) ? `<p><b>${t('sessions.chat')}:</b> ${escapeHtml(chatDisplayTitle(s)!)}</p>` : ''}
       <p><b>chatId:</b> <code>${escapeHtml(s.chatId ?? '')}</code> <button data-copy="${escapeHtml(s.chatId ?? '')}">${t('sessions.copy')}</button></p>
       <p><b>rootMessageId:</b> <code>${escapeHtml(s.rootMessageId ?? '')}</code> <button data-copy="${escapeHtml(s.rootMessageId ?? '')}">${t('sessions.copy')}</button></p>
       ${s.threadId ? `<p><b>threadId:</b> <code>${escapeHtml(s.threadId)}</code></p>` : ''}
       <p><b>${t('sessions.workingDir')}:</b> ${escapeHtml(s.workingDir ?? '-')}</p>
       <div class="actions">
-        <button id="locate-btn" type="button">${t('sessions.locate')}</button>
-        ${s.webPort ? `<a class="btn-link primary" href="http://${escapeHtml(location.hostname)}:${s.proxyPort ?? s.webPort}${s.proxyPort ? `/s/${encodeURIComponent(s.sessionId)}` : ''}" target="_blank" rel="noopener">${t('sessions.openTerminal')}</a>` : ''}
+        ${chatScopeLink(s) ?? `<button id="locate-btn" type="button">${t('sessions.locate')}</button>`}
+        ${terminal ? `<a class="btn-link primary" href="${escapeHtml(terminal)}" target="_blank" rel="noopener">${t('sessions.openTerminal')}</a>` : ''}
         ${closed ? `<button id="resume-btn" type="button" class="primary">${t('sessions.resume')}</button>` : ''}
         ${!closed ? `<button id="close-btn" type="button" class="contrast">${t('sessions.close')}</button>` : ''}
       </div>
@@ -223,36 +516,7 @@ export function renderSessionsPage(root: HTMLElement) {
 
     const locateBtn = drawer.querySelector<HTMLButtonElement>('#locate-btn');
     if (locateBtn) {
-      locateBtn.onclick = async () => {
-        locateBtn.disabled = true;
-        locateBtn.textContent = t('sessions.locating');
-        try {
-          const r = await fetch(`/api/sessions/${encodeURIComponent(s.sessionId)}/locate`, { method: 'POST' });
-          const body = await r.json();
-          if (body.ok) {
-            let left = 30;
-            locateBtn.textContent = t('sessions.cooldown', { seconds: left });
-            const tick = setInterval(() => {
-              left -= 1;
-              if (left <= 0) {
-                clearInterval(tick);
-                locateBtn.disabled = false;
-                locateBtn.textContent = t('sessions.locate');
-              } else {
-                locateBtn.textContent = t('sessions.cooldown', { seconds: left });
-              }
-            }, 1000);
-          } else {
-            alert(`Locate failed: ${body.error ?? r.status}`);
-            locateBtn.disabled = false;
-            locateBtn.textContent = t('sessions.locate');
-          }
-        } catch (e) {
-          alert(`Locate error: ${e}`);
-          locateBtn.disabled = false;
-          locateBtn.textContent = t('sessions.locate');
-        }
-      };
+      locateBtn.onclick = () => void locateSession(s, locateBtn);
     }
 
     const resumeBtn = drawer.querySelector<HTMLButtonElement>('#resume-btn');
@@ -278,13 +542,7 @@ export function renderSessionsPage(root: HTMLElement) {
     const closeBtn = drawer.querySelector<HTMLButtonElement>('#close-btn');
     if (closeBtn) {
       closeBtn.onclick = async () => {
-        if (!confirm(t('sessions.closeConfirm'))) return;
-        closeBtn.disabled = true;
-        try {
-          await fetch(`/api/sessions/${encodeURIComponent(s.sessionId)}/close`, { method: 'POST' });
-        } finally {
-          drawer.close();
-        }
+        if (await closeSession(s, closeBtn)) drawer.close();
       };
     }
 
@@ -308,6 +566,86 @@ export function renderSessionsPage(root: HTMLElement) {
     if (!tr) return;
     const s = store.sessions.get(tr.dataset.id!);
     if (s) openDrawer(s);
+  });
+
+  board.addEventListener('click', e => {
+    const target = e.target as HTMLElement;
+    // 列头 ‹/› 按钮：交换列顺序（拖拽的键盘/触屏兜底）
+    const moveBtn = target.closest<HTMLButtonElement>('button[data-move-col]');
+    if (moveBtn) {
+      moveColumn(moveBtn.dataset.moveCol!, Number(moveBtn.dataset.dir));
+      return;
+    }
+    const card = target.closest<HTMLElement>('.session-card[data-id]');
+    if (!card) return;
+    const s = store.sessions.get(card.dataset.id!);
+    if (!s) return;
+
+    const actionButton = target.closest<HTMLButtonElement>('button[data-action]');
+    if (actionButton) {
+      const action = actionButton.dataset.action;
+      if (action === 'details') openDrawer(s);
+      else if (action === 'locate') void locateSession(s, actionButton);
+      else if (action === 'close') void closeSession(s, actionButton).then(ok => {
+        if (ok) {
+          selected.delete(s.sessionId);
+          rerender();
+        }
+      });
+      return;
+    }
+
+    // Clicking the card body toggles selection (the Feishu topic link lives
+    // behind the 定位 button) — no checkbox, the whole card is the target.
+    if (target.closest('a, button, input, label')) return;
+    if (selected.has(s.sessionId)) selected.delete(s.sessionId);
+    else selected.add(s.sessionId);
+    card.classList.toggle('selected', selected.has(s.sessionId));
+    card.setAttribute('aria-pressed', String(selected.has(s.sessionId)));
+    syncBulkUi(filtered().filter(r => r.status !== 'closed'));
+  });
+
+  // ── 列头拖拽排序：拖起一列，放到目标列的位置 ─────────────────────────────
+  board.addEventListener('dragstart', e => {
+    const header = (e.target as HTMLElement).closest<HTMLElement>('.session-board-column > header[draggable]');
+    const col = header?.closest<HTMLElement>('.session-board-column');
+    if (!col?.dataset.col) return;
+    dragColId = col.dataset.col;
+    col.classList.add('dragging');
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', dragColId);
+    }
+  });
+  board.addEventListener('dragover', e => {
+    if (!dragColId) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const target = (e.target as HTMLElement).closest<HTMLElement>('.session-board-column');
+    board.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    if (target && target.dataset.col !== dragColId) target.classList.add('drag-over');
+  });
+  board.addEventListener('drop', e => {
+    if (!dragColId) return;
+    e.preventDefault();
+    const target = (e.target as HTMLElement).closest<HTMLElement>('.session-board-column');
+    const from = dragColId;
+    dragColId = null;
+    if (target?.dataset.col) moveColumnTo(from, target.dataset.col);
+  });
+  board.addEventListener('dragend', () => {
+    dragColId = null;
+    board.querySelectorAll('.drag-over, .dragging').forEach(el => el.classList.remove('drag-over', 'dragging'));
+  });
+
+  viewButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const next = btn.dataset.view === 'table' ? 'table' : 'board';
+      if (next === viewMode) return;
+      viewMode = next;
+      writeStoredSessionsViewMode(window.localStorage, viewMode);
+      rerender();
+    });
   });
 
   selectAllBox.addEventListener('change', () => {
@@ -374,4 +712,6 @@ export function renderSessionsPage(root: HTMLElement) {
   filtersForm.addEventListener('input', rerender);
   store.on(rerender);
   rerender();
+  // bot 友好名 / 群聊标题异步解析，回来后补一次重绘（首帧先显示原值）
+  void loadNameMaps().then(rerender);
 }

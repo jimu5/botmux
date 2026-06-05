@@ -1,7 +1,7 @@
 // Roles page: hierarchical group → bot role editor.
 // Displays groups as collapsible sections with bots nested inside.
 // Each bot has its own per-group role definition selectable for editing.
-import { escapeHtml, t } from './ui.js';
+import { botOrbStyle, escapeHtml, t } from './ui.js';
 
 interface BotInfo {
   larkAppId: string;
@@ -152,7 +152,7 @@ function renderTree(filter: string = ''): void {
                  data-group-id="${escapeHtml(g.chatId)}"
                  data-bot-id="${escapeHtml(b.larkAppId)}">
               <span class="roles-bot-indent"></span>
-              <span class="roles-bot-icon">🤖</span>
+              <span class="orb-avatar orb-avatar-sm" style="${botOrbStyle(b.botName)}" aria-hidden="true"></span>
               <div class="roles-bot-info">
                 <div class="roles-bot-name">${escapeHtml(b.botName)}</div>
                 <div class="roles-bot-id">${escapeHtml(b.larkAppId)}</div>
@@ -169,7 +169,7 @@ function renderTree(filter: string = ''): void {
         <div class="roles-group-row ${expanded ? 'expanded' : ''} ${selectedGroupId === g.chatId && !selectedBotId ? 'selected' : ''}"
              data-group-id="${escapeHtml(g.chatId)}">
           <span class="roles-group-arrow">${arrow}</span>
-          <span class="roles-group-icon">📁</span>
+          <span class="roles-group-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="5.6" cy="5.8" r="2.4"/><path d="M1.8 13.2c.5-2.4 2-3.6 3.8-3.6s3.3 1.2 3.8 3.6"/><circle cx="11" cy="6.8" r="1.9"/><path d="M9.8 12.6c.4-1.7 1.5-2.6 2.8-2.6 1 0 1.9.5 2.4 1.6"/></svg></span>
           <div class="roles-group-info">
             <div class="roles-group-name">${escapeHtml(g.name ?? g.chatId)}</div>
             <div class="roles-group-meta">

@@ -3,10 +3,23 @@
 // Groups & Bots tab). Saving here only affects NEW group chats first observed
 // after the save; existing chats are left alone, and chats already auto-bound
 // once stay user-controlled.
-import { escapeHtml, t } from './ui.js';
+import { store } from './store.js';
+import { botOrbStyle, escapeHtml, t } from './ui.js';
 
 let cache: { bots: any[] } = { bots: [] };
 let loadError: string | null = null;
+// master-detail：左侧员工名册选中谁，右侧就渲染谁的档案
+let selectedAppId: string | null = null;
+
+/** /api/bots 不带 cliId — 从 store 里该 bot 最近的会话上推。 */
+function cliIdOf(appId: string): string {
+  let best: any = null;
+  for (const s of store.sessions.values()) {
+    if (s.larkAppId !== appId || !s.cliId) continue;
+    if (!best || Number(s.lastMessageAt ?? 0) > Number(best.lastMessageAt ?? 0)) best = s;
+  }
+  return best?.cliId ?? '';
+}
 
 function pageHtml(): string {
   return `<section class="page">
@@ -17,11 +30,14 @@ function pageHtml(): string {
     <p>${t('botDefaults.subtitle')}</p>
   </div>
 </div>
-<form id="bd-filters" class="filters">
+<form id="bd-filters" class="filters sessions-filters">
   <input type="search" name="q" placeholder="${t('botDefaults.search')}" />
   <button type="button" id="bd-refresh">${t('botDefaults.refresh')}</button>
 </form>
-<div id="bd-list"></div>
+<div class="bd-layout">
+  <aside id="bd-roster" class="bd-roster"></aside>
+  <div id="bd-list" class="bd-detail"></div>
+</div>
 </section>`;
 }
 
@@ -63,6 +79,7 @@ function fmtSince(since: number): string {
 export async function renderBotDefaultsPage(root: HTMLElement) {
   root.innerHTML = pageHtml();
   const listEl = root.querySelector<HTMLElement>('#bd-list')!;
+  const rosterEl = root.querySelector<HTMLElement>('#bd-roster')!;
   const form = root.querySelector<HTMLFormElement>('#bd-filters')!;
   const refreshBtn = root.querySelector<HTMLButtonElement>('#bd-refresh')!;
 
@@ -70,6 +87,16 @@ export async function renderBotDefaultsPage(root: HTMLElement) {
     refreshBtn.disabled = true;
     try { await loadBots(); rerender(); } finally { refreshBtn.disabled = false; }
   };
+
+  // 帮助文字默认折叠成一行；点说明文字本身展开/收起（preventDefault 拦掉
+  // label 默认行为，避免一点说明就把开关也切了）。只绑一次，委托不随 rerender 重建。
+  listEl.addEventListener('click', e => {
+    const sm = (e.target as HTMLElement).closest<HTMLElement>('.toggle-tx small, small.bd-help');
+    if (sm) {
+      e.preventDefault();
+      sm.classList.toggle('open');
+    }
+  });
 
   await loadBots();
 
@@ -82,63 +109,103 @@ export async function renderBotDefaultsPage(root: HTMLElement) {
       (b.larkAppId ?? '').toLowerCase().includes(q),
     );
     if (loadError) {
+      rosterEl.innerHTML = '';
       listEl.innerHTML = `<p class="hint-warn">无法加载 bot 列表：${escapeHtml(loadError)}<br>` +
         `常见原因：dashboard / daemon 进程还在跑旧代码，执行 <code>botmux restart</code> 后刷新。</p>`;
       return;
     }
     if (filtered.length === 0) {
+      rosterEl.innerHTML = '';
       listEl.innerHTML = `<p class="empty">${t('botDefaults.empty')}</p>`;
       return;
     }
-    listEl.innerHTML = filtered.map(renderBotCard).join('');
+    if (!selectedAppId || !filtered.some((b: any) => b.larkAppId === selectedAppId)) {
+      selectedAppId = filtered[0].larkAppId;
+    }
+    rosterEl.innerHTML = filtered.map(renderRosterItem).join('');
+    rosterEl.querySelectorAll<HTMLElement>('.bd-roster-item').forEach(el => {
+      el.onclick = () => {
+        selectedAppId = el.dataset.appid!;
+        rerender();
+      };
+    });
+    const sel = filtered.find((b: any) => b.larkAppId === selectedAppId)!;
+    listEl.innerHTML = renderBotCard(sel);
     wireCardHandlers();
+  }
+
+  function renderRosterItem(b: any): string {
+    const name = b.botName ?? b.larkAppId;
+    const cli = cliIdOf(b.larkAppId);
+    const flag = b.defaultOncall?.enabled
+      ? `<span class="bd-roster-flag">oncall</span>`
+      : '';
+    return `<div class="bd-roster-item${b.larkAppId === selectedAppId ? ' on' : ''}" data-appid="${escapeHtml(b.larkAppId)}" role="button" tabindex="0">
+      <span class="orb-avatar orb-avatar-sm" style="${botOrbStyle(name)}" aria-hidden="true"></span>
+      <div class="bd-roster-tx">
+        <b>${escapeHtml(name)}</b>
+        <span>${escapeHtml(cli || b.larkAppId.slice(0, 14))}</span>
+      </div>
+      ${flag}
+    </div>`;
   }
 
   function renderBotCard(b: any): string {
     if (b.error) {
-      return `<article class="bd-card" data-appid="${escapeHtml(b.larkAppId)}">
-        <header><strong>${escapeHtml(b.botName ?? b.larkAppId)}</strong>
-        <small>${escapeHtml(b.larkAppId)}</small></header>
+      return `<article class="bd-card bd-profile" data-appid="${escapeHtml(b.larkAppId)}">
+        <header class="bd-profile-head">
+          <span class="orb-avatar" style="${botOrbStyle(b.botName ?? b.larkAppId)}" aria-hidden="true"></span>
+          <div class="bd-profile-id"><strong>${escapeHtml(b.botName ?? b.larkAppId)}</strong>
+          <code>${escapeHtml(b.larkAppId)}</code></div>
+        </header>
         <p class="hint-warn-inline">查询失败：${escapeHtml(b.error)}</p>
       </article>`;
     }
     const def = b.defaultOncall ?? { enabled: false, workingDir: '', since: 0 };
     const enabled = !!def.enabled;
-    return `<article class="bd-card" data-appid="${escapeHtml(b.larkAppId)}">
-      <header>
-        <strong>${escapeHtml(b.botName ?? b.larkAppId)}</strong>
-        <small>${escapeHtml(b.larkAppId)}</small>
+    const name = b.botName ?? b.larkAppId;
+    const cli = cliIdOf(b.larkAppId);
+    return `<article class="bd-card bd-profile" data-appid="${escapeHtml(b.larkAppId)}">
+      <header class="bd-profile-head">
+        <span class="orb-avatar" style="${botOrbStyle(name)}" aria-hidden="true"><i class="orb-dot orb-dot-ok"></i></span>
+        <div class="bd-profile-id">
+          <strong>${escapeHtml(name)}</strong>
+          ${cli ? `<span class="mate-role">${escapeHtml(cli)}</span>` : ''}
+          <code>${escapeHtml(b.larkAppId)}</code>
+        </div>
+        <div class="bd-profile-meta bd-meta">
+          <small class="bd-meta-ok">● ${t('botDefaults.metaOnline')}</small>
+          <small data-oncall-since>${t('botDefaults.lastEnabled')}: ${escapeHtml(fmtSince(def.since ?? 0))}</small>
+          <small>${t('botDefaults.autobound', { count: b.autoboundChatCount ?? 0 })}</small>
+        </div>
       </header>
-      <div class="bd-body">
-        <section class="bd-section">
-          <h3 class="bd-section-title">${t('botDefaults.sectionOncall')}</h3>
-          <label class="checkbox-row">
-            <input type="checkbox" data-action="toggle" ${enabled ? 'checked' : ''}>
-            <strong>${t('botDefaults.defaultOncall')}</strong>
-            <small>${t('botDefaults.defaultOncallHelp')}</small>
-          </label>
-          <div class="bd-row">
-            <label>
-              <span>${t('botDefaults.workingDir')}</span>
-              <input type="text" data-input="workingDir" placeholder="e.g. /root/iserver/botmux"
-                value="${escapeHtml(def.workingDir ?? '')}" ${enabled ? '' : 'disabled'}>
+      <div class="bd-body bd-grid">
+        <section class="bd-tile">
+          <section class="bd-section">
+            <h3 class="bd-section-title">${t('botDefaults.sectionOncall')}</h3>
+            <label class="toggle-row">
+              <input type="checkbox" data-action="toggle" ${enabled ? 'checked' : ''}>
+              <span class="switch" aria-hidden="true"></span>
+              <span class="toggle-tx"><strong>${t('botDefaults.defaultOncall')}</strong>
+              <small>${t('botDefaults.defaultOncallHelp')}。${t('botDefaults.warning')}</small></span>
             </label>
-          </div>
-          <p class="bd-section-note">${t('botDefaults.warning')}</p>
-          <div class="bd-meta">
-            <small>${t('botDefaults.lastEnabled')}: ${escapeHtml(fmtSince(def.since ?? 0))}</small>
-            <small>${t('botDefaults.autobound', { count: b.autoboundChatCount ?? 0 })}</small>
-          </div>
-          <div class="actions">
-            <button type="button" data-action="save">${t('botDefaults.save')}</button>
-            <span class="oncall-status" data-status></span>
-          </div>
-          ${renderAutoStartControls(b)}
+            <div class="bd-row">
+              <label>
+                <span>${t('botDefaults.workingDir')}</span>
+                <input type="text" data-input="workingDir" placeholder="e.g. /root/iserver/botmux"
+                  value="${escapeHtml(def.workingDir ?? '')}" ${enabled ? '' : 'disabled'}>
+              </label>
+            </div>
+            <div class="actions">
+              <button type="button" class="primary" data-action="save">${t('botDefaults.save')}</button>
+              <span class="oncall-status" data-status></span>
+            </div>
+            ${renderAutoStartControls(b)}
+          </section>
         </section>
-        ${renderRoleSection(b)}
-        ${renderBrandSection(b)}
-        ${renderCardBehaviorSection(b)}
-        ${renderGrantSection(b)}
+        <section class="bd-tile">${renderRoleSection(b)}</section>
+        <section class="bd-tile">${renderCardBehaviorSection(b)}${renderBrandSection(b)}</section>
+        <section class="bd-tile">${renderGrantSection(b)}</section>
       </div>
     </article>`;
   }
@@ -159,7 +226,7 @@ export async function renderBotDefaultsPage(root: HTMLElement) {
         placeholder="${escapeHtml(t('botDefaults.rolePlaceholder'))}"
         style="width:100%;box-sizing:border-box;font:13px/1.5 ui-monospace,Menlo,monospace;padding:10px"${loaded ? '' : ' disabled'}>${loaded ? escapeHtml(b.teamRole) : ''}</textarea>
       <div class="actions">
-        <button type="button" data-action="save-role"${loaded ? '' : ' disabled'}>${t('botDefaults.roleSave')}</button>
+        <button type="button" class="primary" data-action="save-role"${loaded ? '' : ' disabled'}>${t('botDefaults.roleSave')}</button>
         <button type="button" data-action="delete-role"${loaded ? '' : ' disabled'}>${t('botDefaults.roleDelete')}</button>
         <span class="oncall-status" data-role-status></span>
       </div>
@@ -186,9 +253,9 @@ export async function renderBotDefaultsPage(root: HTMLElement) {
             value="${escapeHtml(brand ?? '')}">
         </label>
         <small data-brand-state>${escapeHtml(brandStateLabel(brand))}</small>
-        <small>${t('botDefaults.brandLabelHelp')}</small>
+        <small class="bd-help">${t('botDefaults.brandLabelHelp')}</small>
         <div class="actions">
-          <button type="button" data-action="save-brand">${t('botDefaults.brandSave')}</button>
+          <button type="button" class="primary" data-action="save-brand">${t('botDefaults.brandSave')}</button>
           <button type="button" data-action="reset-brand">${t('botDefaults.brandReset')}</button>
           <span class="oncall-status" data-brand-status></span>
         </div>
@@ -205,20 +272,23 @@ export async function renderBotDefaultsPage(root: HTMLElement) {
     const privateCard = b.privateCard === true;
     return `<section class="bd-section">
       <h3 class="bd-section-title">${t('botDefaults.sectionCard')}</h3>
-      <label class="checkbox-row">
+      <label class="toggle-row">
         <input type="checkbox" data-action="toggle-disable-streaming" ${disableStreaming ? 'checked' : ''}>
-        <strong>${t('botDefaults.disableStreaming')}</strong>
-        <small>${t('botDefaults.disableStreamingHelp')}</small>
+        <span class="switch" aria-hidden="true"></span>
+        <span class="toggle-tx"><strong>${t('botDefaults.disableStreaming')}</strong>
+        <small>${t('botDefaults.disableStreamingHelp')}</small></span>
       </label>
-      <label class="checkbox-row">
+      <label class="toggle-row">
         <input type="checkbox" data-action="toggle-writable-link" ${writableLink ? 'checked' : ''} ${disableStreaming ? 'disabled' : ''}>
-        <strong>${t('botDefaults.writableLink')}</strong>
-        <small>${t('botDefaults.writableLinkHelp')}</small>
+        <span class="switch" aria-hidden="true"></span>
+        <span class="toggle-tx"><strong>${t('botDefaults.writableLink')}</strong>
+        <small>${t('botDefaults.writableLinkHelp')}</small></span>
       </label>
-      <label class="checkbox-row">
+      <label class="toggle-row">
         <input type="checkbox" data-action="toggle-private-card" ${privateCard ? 'checked' : ''}>
-        <strong>${t('botDefaults.privateCard')}</strong>
-        <small>${t('botDefaults.privateCardHelp')}</small>
+        <span class="switch" aria-hidden="true"></span>
+        <span class="toggle-tx"><strong>${t('botDefaults.privateCard')}</strong>
+        <small>${t('botDefaults.privateCardHelp')}</small></span>
       </label>
       <div class="actions">
         <small data-card-pref-moot class="hint-warn-inline" ${disableStreaming ? '' : 'hidden'}>${t('botDefaults.writableLinkMoot')}</small>
@@ -240,10 +310,11 @@ export async function renderBotDefaultsPage(root: HTMLElement) {
     const quota: number | null = typeof b.messageQuotaDefaultLimit === 'number' ? b.messageQuotaDefaultLimit : null;
     return `<section class="bd-section">
       <h3 class="bd-section-title">${t('botDefaults.sectionGrant')}</h3>
-      <label class="checkbox-row">
+      <label class="toggle-row">
         <input type="checkbox" data-action="toggle-restrict-grant" ${restrict ? 'checked' : ''}>
-        <strong>${t('botDefaults.restrictGrant')}</strong>
-        <small>${t('botDefaults.restrictGrantHelp')}</small>
+        <span class="switch" aria-hidden="true"></span>
+        <span class="toggle-tx"><strong>${t('botDefaults.restrictGrant')}</strong>
+        <small>${t('botDefaults.restrictGrantHelp')}</small></span>
       </label>
       <div class="bd-row bd-quota">
         <label>
@@ -253,9 +324,9 @@ export async function renderBotDefaultsPage(root: HTMLElement) {
             value="${quota == null ? '' : quota}">
         </label>
         <small data-quota-state>${escapeHtml(quotaStateLabel(quota))}</small>
-        <small>${t('botDefaults.quotaHelp')}</small>
+        <small class="bd-help">${t('botDefaults.quotaHelp')}</small>
         <div class="actions">
-          <button type="button" data-action="save-quota">${t('botDefaults.quotaSave')}</button>
+          <button type="button" class="primary" data-action="save-quota">${t('botDefaults.quotaSave')}</button>
           <button type="button" data-action="off-quota">${t('botDefaults.quotaOff')}</button>
           <span class="oncall-status" data-grant-status></span>
         </div>
@@ -273,10 +344,11 @@ export async function renderBotDefaultsPage(root: HTMLElement) {
     const joinPrompt: string = typeof b.autoStartOnGroupJoinPrompt === 'string' ? b.autoStartOnGroupJoinPrompt : '';
     return `<div class="bd-subsection">
       <h4 class="bd-subsection-title">${t('botDefaults.sectionAutoStart')}</h4>
-      <label class="checkbox-row">
+      <label class="toggle-row">
         <input type="checkbox" data-action="toggle-auto-join" ${onJoin ? 'checked' : ''}>
-        <strong>${t('botDefaults.autoStartJoin')}</strong>
-        <small>${t('botDefaults.autoStartJoinHelp')}</small>
+        <span class="switch" aria-hidden="true"></span>
+        <span class="toggle-tx"><strong>${t('botDefaults.autoStartJoin')}</strong>
+        <small>${t('botDefaults.autoStartJoinHelp')}</small></span>
       </label>
       <div class="bd-row">
         <label>
@@ -285,13 +357,14 @@ export async function renderBotDefaultsPage(root: HTMLElement) {
             placeholder="${escapeHtml(t('botDefaults.autoStartJoinPromptPlaceholder'))}">${escapeHtml(joinPrompt)}</textarea>
         </label>
         <div class="actions">
-          <button type="button" data-action="save-auto-join-prompt">${t('botDefaults.autoStartJoinPromptSave')}</button>
+          <button type="button" class="primary" data-action="save-auto-join-prompt">${t('botDefaults.autoStartJoinPromptSave')}</button>
         </div>
       </div>
-      <label class="checkbox-row">
+      <label class="toggle-row">
         <input type="checkbox" data-action="toggle-auto-topic" ${onTopic ? 'checked' : ''}>
-        <strong>${t('botDefaults.autoStartTopic')}</strong>
-        <small>${t('botDefaults.autoStartTopicHelp')}</small>
+        <span class="switch" aria-hidden="true"></span>
+        <span class="toggle-tx"><strong>${t('botDefaults.autoStartTopic')}</strong>
+        <small>${t('botDefaults.autoStartTopicHelp')}</small></span>
       </label>
       <div class="actions">
         <span class="oncall-status" data-auto-start-status></span>
@@ -345,7 +418,7 @@ export async function renderBotDefaultsPage(root: HTMLElement) {
             if (cached && body.defaultOncall) cached.defaultOncall = body.defaultOncall;
             // Update the visible "上次启用时间" line in-place so the user
             // sees the timestamp jump without losing the toast.
-            const metaEl = card.querySelector<HTMLElement>('.bd-meta small:first-child');
+            const metaEl = card.querySelector<HTMLElement>('[data-oncall-since]');
             if (metaEl && body.defaultOncall?.since != null) {
               metaEl.textContent = `上次启用时间：${fmtSince(body.defaultOncall.since)}`;
             }

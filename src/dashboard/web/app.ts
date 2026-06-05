@@ -8,10 +8,11 @@ import { renderBotDefaultsPage } from './bot-defaults.js';
 import { renderRolesPage } from './roles.js';
 import { renderTeamFederationPage, renderTeamManagePage } from './team-federation.js';
 import { renderConnectorsPage } from './connectors.js';
+import { renderSettingsPage } from './settings.js';
 import { renderWorkflowsPage } from './workflows.js';
 import { renderWorkflowCatalogPage } from './workflow-catalog.js';
 import { wireBotOnboardingButton } from './bot-onboarding.js';
-import { t, ui } from './ui.js';
+import { attentionReason, botDisplayName, escapeHtml, loadNameMaps, relTime, t, ui } from './ui.js';
 import type { DashboardLocale } from './i18n.js';
 import type { ThemeMode } from './preferences.js';
 
@@ -43,17 +44,82 @@ export function showAuthExpiredOverlay(): void {
   document.body.appendChild(el);
 }
 
-// Patch the global fetch so every 401 from any API call triggers the overlay.
-// Public routes (static shell, read-only workflow API) never return 401, so any
-// 401 we see means the session token was rotated while this tab was open.
+// ── Read-only toast (write attempt without a valid token) ───────────────────
+// In public read-only mode browsing GETs never 401, but a write action
+// (close session, cancel run, …) without the active token does. That's not
+// "your link died" — it's "you're a read-only visitor", so show a transient
+// toast instead of the blocking overlay.
+let _roToastTimer: number | undefined;
+export function showReadOnlyToast(): void {
+  let el = document.getElementById('readonly-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'readonly-toast';
+    el.style.cssText =
+      'position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:9999;' +
+      'background:var(--fg,#1f2329);color:var(--bg,#fff);padding:10px 18px;' +
+      'border-radius:8px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.25)';
+    document.body.appendChild(el);
+  }
+  el.textContent = '当前是只读访问，此操作需要授权链接（运行 botmux dashboard 获取）';
+  el.style.display = 'block';
+  if (_roToastTimer) window.clearTimeout(_roToastTimer);
+  _roToastTimer = window.setTimeout(() => { el!.style.display = 'none'; }, 4000);
+}
+
+// Patch the global fetch to route 401s: a read (GET/HEAD) 401 means the token
+// was rotated while this tab was open (only possible when public read-only
+// mode is off) → blocking overlay; a write 401 means "read-only visitor" →
+// transient toast.
 const _origFetch = window.fetch.bind(window);
 window.fetch = async function patchedFetch(
   ...args: Parameters<typeof fetch>
 ): ReturnType<typeof fetch> {
   const res = await _origFetch(...args);
-  if (res.status === 401) showAuthExpiredOverlay();
+  if (res.status === 401) {
+    const method = (args[1]?.method ?? 'GET').toUpperCase();
+    if (method === 'GET' || method === 'HEAD') showAuthExpiredOverlay();
+    else showReadOnlyToast();
+  }
   return res;
 };
+
+// ── 全局 attention strip ─────────────────────────────────────────────────────
+// 「需要你」是全局最高优先级：不管在哪个页面，待处理数和最久等待项都常驻
+// 顶部一条琥珀色 strip，点「立即处理」跳到会话页（needs-you 列置顶）。
+let lastStripHtml = '';
+function paintAttentionStrip(): void {
+  const el = document.getElementById('attention-strip');
+  if (!el) return;
+  const pending = [...store.sessions.values()]
+    .map(s => ({ s, reason: attentionReason(s) }))
+    .filter((x): x is { s: any; reason: string } => !!x.reason)
+    .sort((a, b) => Number(a.s.lastMessageAt ?? 0) - Number(b.s.lastMessageAt ?? 0));
+  if (pending.length === 0) {
+    el.hidden = true;
+    el.innerHTML = '';
+    lastStripHtml = '';
+    return;
+  }
+  const longest = pending[0];
+  const html = `
+    <span class="attention-strip-ic" aria-hidden="true">!</span>
+    <b>${escapeHtml(t('strip.pending', { count: pending.length }))}</b>
+    <span class="attention-strip-longest">${escapeHtml(t('strip.longest', {
+      time: relTime(longest.s.lastMessageAt),
+      bot: botDisplayName(longest.s),
+      reason: longest.reason,
+    }))}</span>
+    <a class="attention-strip-go" href="#/sessions">${escapeHtml(t('strip.handle'))}</a>`;
+  el.hidden = false;
+  // 内容没变就不重写 — innerHTML 重建会把 strip-pulse 动画打回起点（视觉跳变）
+  if (html === lastStripHtml) return;
+  lastStripHtml = html;
+  el.innerHTML = html;
+}
+store.on(paintAttentionStrip);
+// bot 友好名异步解析回来后刷一次 strip（页面级重绘由各 mount 自己处理）
+void loadNameMaps().then(paintAttentionStrip);
 
 // Pages that own a polling loop / cleanup return a disposer; we run it
 // on the next route switch so timers don't leak across navigations.
@@ -73,6 +139,7 @@ function route() {
     pageDispose = renderWorkflowCatalogPage(root);
   } else if (hash.startsWith('#/workflows')) pageDispose = renderWorkflowsPage(root);
   else if (hash.startsWith('#/groups')) renderGroupsPage(root);
+  else if (hash.startsWith('#/settings')) void renderSettingsPage(root);
   else if (hash.startsWith('#/bot-defaults')) renderBotDefaultsPage(root);
   else if (hash.startsWith('#/connectors')) renderConnectorsPage(root);
   else if (hash.startsWith('#/team/manage')) renderTeamManagePage(root);
@@ -126,9 +193,11 @@ void (async () => {
   wireBotOnboardingButton();
   ui.on(() => {
     paintChrome();
+    paintAttentionStrip();
     route();
   });
   paintChrome();
+  paintAttentionStrip();
   try {
     await bootstrap();
   } catch (err) {
