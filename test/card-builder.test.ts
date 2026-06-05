@@ -6,7 +6,10 @@
  *
  * Run:  pnpm vitest run test/card-builder.test.ts
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import {
   buildSessionCard,
   buildStreamingCard,
@@ -18,6 +21,23 @@ import {
 } from '../src/im/lark/card-builder.js';
 import type { RelayPickerEntry } from '../src/im/lark/card-builder.js';
 import type { ProjectInfo } from '../src/services/project-scanner.js';
+import { globalConfigPath } from '../src/global-config.js';
+
+// The terminal button's URL wrapping now depends on the global dashboard
+// setting `openTerminalInFeishu` (read via readGlobalConfig at build time):
+// default → direct URL, opt-in → Feishu sidebar wrapper. Isolate HOME to an
+// empty temp dir so these tests see the DEFAULT (no config.json → direct),
+// independent of whatever the test runner's real ~/.botmux/config.json holds.
+let cardTestHome: string;
+beforeEach(() => {
+  cardTestHome = mkdtempSync(join(tmpdir(), 'botmux-card-builder-'));
+  vi.stubEnv('HOME', cardTestHome);
+  mkdirSync(dirname(globalConfigPath()), { recursive: true });
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(cardTestHome, { recursive: true, force: true });
+});
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -45,6 +65,17 @@ function expectSidebarUrl(actual: string, targetUrl: string): void {
   expect(u.searchParams.get('max_width')).toBe('1200');
   expect(u.searchParams.get('reload')).toBe('false');
   expect(u.searchParams.get('url')).toBe(targetUrl);
+}
+
+/** Default mode: the terminal button links straight to the terminal URL on
+ *  every platform field (no Feishu sidebar wrapper). */
+function expectDirectUrl(actual: string, targetUrl: string): void {
+  expect(actual).toBe(targetUrl);
+}
+
+/** Opt into the Feishu sidebar wrapper for the current (isolated) HOME. */
+function enableOpenTerminalInFeishu(): void {
+  writeFileSync(globalConfigPath(), JSON.stringify({ dashboard: { openTerminalInFeishu: true } }));
 }
 
 // ─── getCliDisplayName ────────────────────────────────────────────────────
@@ -140,8 +171,19 @@ describe('buildSessionCard', () => {
       const terminalBtn = actions[0];
       expect(terminalBtn.type).toBe('primary');
       expect(terminalBtn.text.content).toContain('打开终端');
+      expectDirectUrl(terminalBtn.multi_url.url, URL);
+      expectDirectUrl(terminalBtn.multi_url.pc_url, URL);
+      expect(terminalBtn.multi_url.android_url).toBe(URL);
+      expect(terminalBtn.multi_url.ios_url).toBe(URL);
+    });
+
+    it('wraps the terminal link in the Feishu sidebar when openTerminalInFeishu is on', () => {
+      enableOpenTerminalInFeishu();
+      const card = parse(buildSessionCard(SID, ROOT, URL, TITLE));
+      const terminalBtn = findActions(card)[0];
       expectSidebarUrl(terminalBtn.multi_url.url, URL);
       expectSidebarUrl(terminalBtn.multi_url.pc_url, URL);
+      // mobile fields stay direct in both modes
       expect(terminalBtn.multi_url.android_url).toBe(URL);
       expect(terminalBtn.multi_url.ios_url).toBe(URL);
     });
@@ -485,8 +527,8 @@ describe('buildStreamingCard', () => {
       const actions = findActions(card);
       const termBtn = actions.find((a: any) => a.multi_url);
       expect(termBtn).toBeDefined();
-      expectSidebarUrl(termBtn.multi_url.url, URL);
-      expectSidebarUrl(termBtn.multi_url.pc_url, URL);
+      expectDirectUrl(termBtn.multi_url.url, URL);
+      expectDirectUrl(termBtn.multi_url.pc_url, URL);
       expect(termBtn.multi_url.android_url).toBe(URL);
       expect(termBtn.multi_url.ios_url).toBe(URL);
       expect(termBtn.type).toBe('primary');
@@ -1005,8 +1047,8 @@ describe('buildPrivateSnapshotCard', () => {
     expect(actions.sort()).toEqual(['close', 'get_write_link']);
     // open-terminal is a URL button (no callback action)
     const link = btns.find((b: any) => b.multi_url);
-    expectSidebarUrl(link.multi_url.url, 'https://t.example/ro');
-    expectSidebarUrl(link.multi_url.pc_url, 'https://t.example/ro');
+    expectDirectUrl(link.multi_url.url, 'https://t.example/ro');
+    expectDirectUrl(link.multi_url.pc_url, 'https://t.example/ro');
     expect(link.multi_url.android_url).toBe('https://t.example/ro');
     expect(link.multi_url.ios_url).toBe('https://t.example/ro');
     // none of the patch-driven / quick-key controls leak in
