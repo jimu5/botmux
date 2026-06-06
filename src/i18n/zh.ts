@@ -227,6 +227,7 @@ export const messages: Record<string, string> = {
   'cmd.config.no_bot': '⚠️ 无法识别当前响应的机器人，/botconfig 无法执行。',
   'cmd.config.no_owner': '⚠️ 本机器人未配置 allowedUsers（无 owner），不能通过聊天改配置。请在部署机器上用 `botmux setup` 配置。',
   'cmd.config.not_admin': '⛔ 仅 owner / allowedUsers 可改配置。',
+  'cmd.config.card_dm_failed': '⚠️ 配置卡只私信发送，但这次没能发给你（为避免配置暴露在群里，不在群内展示）。请确认已和我开启单聊后，重新发送 /botconfig。',
   'cmd.config.help': '⚙️ /botconfig —— 远程改本机器人运营配置（仅 owner/allowedUsers，写盘即热更新，无需重启）\n\n用法：\n/botconfig get              — 查看当前配置\n/botconfig set <字段> <值>  — 修改\n/botconfig unset <字段>     — 清回默认（部分字段支持）\n\n可改字段：\n{fields}\n\n敏感字段 allowedUsers 需在结尾加 `确认` 才生效；secret（appSecret/凭证）不能经此修改。',
   'cmd.config.snapshot': '⚙️ 当前配置\nCLI：{cli}　品牌：{brand}　管理员：{admins} 人\n工作目录：{dirs}\n\n{fields}\n\n（改：/botconfig set <字段> <值>；查帮助：/botconfig help）',
   'cmd.config.set_usage': '用法：/botconfig set <字段> <值>　或　/botconfig unset <字段>\n查看可改字段：/botconfig help',

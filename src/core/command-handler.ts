@@ -624,13 +624,16 @@ async function handleConfigCommand(
     if (!data) { await reply(buildConfigHelp(renderLoc)); return; }
     const cardJson = buildConfigCard(data, renderLoc);
     // 始终把卡片**私信**给 owner，群里不留任何回复：
-    //   • 私聊（单发给 bot）→ 卡片就落在当前私聊 = 直接返回配置；
+    //   • 私聊（单发给 bot）→ sendUserMessage 落在当前私聊 = 直接返回配置；
     //   • 群 / 话题群 → 卡片落在 owner 私聊，群内不产生「话题回复」、也只他可见。
-    // 不再依赖 getChatModeStrict（它会偶发 500 → 误判），私信失败才回退到会话内。
+    // 不再依赖 getChatModeStrict（它会偶发 500 → 误判）。
+    // 私信失败（owner 从未与 bot 开过单聊等）：**绝不**把整张配置卡回退到会话内——
+    // 在群/话题群里那会让 owner-only 的运营配置卡全员可见（按钮虽仍重验 admin 无法提权，
+    // 但卡片本身就违背「始终私信」意图）。只回一句简短文字引导去单聊后重试。
     try {
       await sendUserMessage(larkAppId, senderId, cardJson, 'interactive');
     } catch {
-      await deps.sessionReply(rootId, cardJson, 'interactive', larkAppId);
+      await reply(t('cmd.config.card_dm_failed', undefined, renderLoc));
     }
     return;
   }

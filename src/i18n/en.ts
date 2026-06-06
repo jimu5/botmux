@@ -224,6 +224,7 @@ export const messages: Record<string, string> = {
   'cmd.config.no_bot': '⚠️ Cannot identify the responding bot — /botconfig aborted.',
   'cmd.config.no_owner': '⚠️ This bot has no allowedUsers (no owner) configured, so config cannot be edited from chat. Run `botmux setup` on the host.',
   'cmd.config.not_admin': '⛔ Only owner / allowedUsers may edit config.',
+  'cmd.config.card_dm_failed': '⚠️ The config card is sent only via private message, but I couldn\'t reach you this time (it is not shown in the group, to avoid exposing your config there). Make sure you have a 1:1 chat with me, then send /botconfig again.',
   'cmd.config.help': '⚙️ /botconfig — edit this bot\'s operational config remotely (owner/allowedUsers only; written + hot-applied, no restart)\n\nUsage:\n/botconfig get               — show current config\n/botconfig set <field> <value>  — change a field\n/botconfig unset <field>     — clear back to default (some fields)\n\nEditable fields:\n{fields}\n\nThe sensitive field allowedUsers needs a trailing `confirm`; secrets (appSecret/credentials) cannot be changed here.',
   'cmd.config.snapshot': '⚙️ Current config\nCLI: {cli}　Brand: {brand}　Admins: {admins}\nWorking dirs: {dirs}\n\n{fields}\n\n(edit: /botconfig set <field> <value>; help: /botconfig help)',
   'cmd.config.set_usage': 'Usage: /botconfig set <field> <value>　or　/botconfig unset <field>\nList editable fields: /botconfig help',
