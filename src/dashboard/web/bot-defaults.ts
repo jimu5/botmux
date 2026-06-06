@@ -204,7 +204,7 @@ export async function renderBotDefaultsPage(root: HTMLElement) {
           </section>
         </section>
         <section class="bd-tile">${renderRoleSection(b)}</section>
-        <section class="bd-tile">${renderCardBehaviorSection(b)}${renderBrandSection(b)}</section>
+        <section class="bd-tile">${renderCardBehaviorSection(b)}${renderP2pModeSection(b)}${renderBrandSection(b)}</section>
         <section class="bd-tile">${renderGrantSection(b)}</section>
       </div>
     </article>`;
@@ -293,6 +293,28 @@ export async function renderBotDefaultsPage(root: HTMLElement) {
       <div class="actions">
         <small data-card-pref-moot class="hint-warn-inline" ${disableStreaming ? '' : 'hidden'}>${t('botDefaults.writableLinkMoot')}</small>
         <span class="oncall-status" data-card-pref-status></span>
+      </div>
+    </section>`;
+  }
+
+  // 私聊单聊模式 p2pMode（thread | chat）。Select 一改即 PUT
+  // /api/bots/:appId/p2p-mode（走 applyConfigField，与 /botconfig 同路径）。
+  function renderP2pModeSection(b: any): string {
+    const mode: string = b.p2pMode === 'chat' ? 'chat' : 'thread';
+    return `<section class="bd-section">
+      <h3 class="bd-section-title">${t('botDefaults.sectionP2p')}</h3>
+      <div class="bd-row">
+        <label>
+          <span>${t('botDefaults.p2pMode')}</span>
+          <select data-input="p2pMode">
+            <option value="thread" ${mode === 'chat' ? '' : 'selected'}>${escapeHtml(t('botDefaults.p2pThread'))}</option>
+            <option value="chat" ${mode === 'chat' ? 'selected' : ''}>${escapeHtml(t('botDefaults.p2pChat'))}</option>
+          </select>
+        </label>
+        <small class="bd-help">${t('botDefaults.p2pHelp')}</small>
+        <div class="actions">
+          <span class="oncall-status" data-p2p-status></span>
+        </div>
       </div>
     </section>`;
   }
@@ -588,6 +610,40 @@ export async function renderBotDefaultsPage(root: HTMLElement) {
       if (autoJoinPromptEl && autoJoinPromptSaveBtn) {
         autoJoinPromptSaveBtn.addEventListener('click', () => {
           putCardPref({ autoStartOnGroupJoinPrompt: autoJoinPromptEl.value }, autoJoinPromptSaveBtn, autoStartStatusEl);
+        });
+      }
+
+      // ── 私聊单聊模式 p2pMode select ───────────────────────────────────────
+      const p2pModeSel = card.querySelector<HTMLSelectElement>('select[data-input=p2pMode]');
+      const p2pStatusEl = card.querySelector<HTMLSpanElement>('[data-p2p-status]');
+      if (p2pModeSel && p2pStatusEl) {
+        p2pModeSel.addEventListener('change', async () => {
+          const mode = p2pModeSel.value === 'chat' ? 'chat' : 'thread';
+          p2pStatusEl.textContent = '';
+          p2pStatusEl.className = 'oncall-status';
+          p2pModeSel.disabled = true;
+          try {
+            const r = await fetch(`/api/bots/${encodeURIComponent(appId)}/p2p-mode`, {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ p2pMode: mode }),
+            });
+            const body = await r.json().catch(() => ({}));
+            if (r.ok && body.ok) {
+              p2pStatusEl.textContent = `✓ ${t('botDefaults.cardPrefSaved')}`;
+              p2pStatusEl.classList.add('hint-ok');
+              const cached = cache.bots.find((bb: any) => bb.larkAppId === appId);
+              if (cached) cached.p2pMode = body.p2pMode === 'chat' ? 'chat' : 'thread';
+            } else {
+              p2pStatusEl.textContent = `✗ ${body.error ?? r.status}`;
+              p2pStatusEl.classList.add('hint-warn-inline');
+            }
+          } catch (e: any) {
+            p2pStatusEl.textContent = `✗ ${e?.message ?? e}`;
+            p2pStatusEl.classList.add('hint-warn-inline');
+          } finally {
+            p2pModeSel.disabled = false;
+          }
         });
       }
 

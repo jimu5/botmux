@@ -92,7 +92,7 @@ vi.mock('@larksuiteoapi/node-sdk', () => {
 // ─── Imports (must be after mocks) ──────────────────────────────────────────
 
 import { __resetAnchorQueues } from '../src/utils/anchor-serializer.js';
-import { __resetEventClaimsForTest, canOperate, canTalk, ensureBotOpenId, isBotMentioned, startLarkEventDispatcher, writeBotInfoFile, type EventHandlers } from '../src/im/lark/event-dispatcher.js';
+import { __resetEventClaimsForTest, canOperate, canTalk, decideRouting, ensureBotOpenId, isBotMentioned, startLarkEventDispatcher, writeBotInfoFile, type EventHandlers } from '../src/im/lark/event-dispatcher.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -115,6 +115,7 @@ function setupBotState(opts?: {
   regularGroupReplyInThread?: boolean;
   autoStartOnNewTopic?: boolean;
   chatReplyModes?: Record<string, 'chat' | 'new-topic' | 'topic_alias'>;
+  p2pMode?: 'thread' | 'chat';
 }) {
   mockGetBot.mockReturnValue({
     config: {
@@ -127,6 +128,7 @@ function setupBotState(opts?: {
       regularGroupReplyInThread: opts?.regularGroupReplyInThread,
       autoStartOnNewTopic: opts?.autoStartOnNewTopic,
       chatReplyModes: opts?.chatReplyModes,
+      p2pMode: opts?.p2pMode,
     },
     botOpenId: opts && 'botOpenId' in opts ? opts.botOpenId : MY_OPEN_ID,
     resolvedAllowedUsers: opts?.allowedUsers ?? [],
@@ -221,6 +223,42 @@ function makeUserMessageEvent(opts: {
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
+
+describe('decideRouting — p2p p2pMode (thread | chat)', () => {
+  // Build a p2p DM message object (decideRouting takes message, not the full event).
+  const dm = (over: Record<string, any> = {}) => ({
+    message_id: 'msg-dm', chat_id: 'oc_dm', chat_type: 'p2p',
+    root_id: undefined, thread_id: undefined, ...over,
+  });
+
+  it('chat mode: top-level DM → flat chat-scope anchored on chatId', async () => {
+    setupBotState({ p2pMode: 'chat' });
+    expect(await decideRouting(MY_APP_ID, dm())).toEqual({ scope: 'chat', anchor: 'oc_dm' });
+  });
+
+  it('chat mode: DM reply carrying root_id+thread_id still folds into the SAME chat-scope session (regression — must not escape to thread-scope)', async () => {
+    setupBotState({ p2pMode: 'chat' });
+    expect(await decideRouting(MY_APP_ID, dm({ root_id: 'root-dm', thread_id: 'root-dm' })))
+      .toEqual({ scope: 'chat', anchor: 'oc_dm' });
+  });
+
+  it('default (thread) mode: top-level DM → fresh thread-scope anchored on messageId', async () => {
+    setupBotState({});
+    expect(await decideRouting(MY_APP_ID, dm())).toEqual({ scope: 'thread', anchor: 'msg-dm' });
+  });
+
+  it('default (thread) mode: DM reply with root_id+thread_id threads into its session (real-thread, unchanged)', async () => {
+    setupBotState({});
+    expect(await decideRouting(MY_APP_ID, dm({ root_id: 'root-dm', thread_id: 'root-dm' })))
+      .toEqual({ scope: 'thread', anchor: 'root-dm' });
+  });
+
+  it('p2pMode=chat does NOT leak into group routing (gate is p2p-only): group real-thread stays thread-scope', async () => {
+    setupBotState({ p2pMode: 'chat' });
+    expect(await decideRouting(MY_APP_ID, { message_id: 'msg-g', chat_id: 'oc_g', chat_type: 'group', root_id: 'root-g', thread_id: 'root-g' }))
+      .toEqual({ scope: 'thread', anchor: 'root-g' });
+  });
+});
 
 describe('isBotMentioned', () => {
   beforeEach(() => {

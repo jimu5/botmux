@@ -115,4 +115,17 @@ describe('bot-registry grant additions', () => {
     }
     expect(parseBotConfigsFromText(JSON.stringify([{ larkAppId: 'rg3', larkAppSecret: 's' }]))[0].regularGroupReplyInThread).toBeUndefined();
   });
+
+  it('parses p2pMode only as literal chat (else undefined = thread default)', () => {
+    const cfgs = parseBotConfigsFromText(JSON.stringify([
+      { larkAppId: 'p1', larkAppSecret: 's', p2pMode: 'chat' },
+      { larkAppId: 'p2', larkAppSecret: 's', p2pMode: 'thread' },
+      { larkAppId: 'p3', larkAppSecret: 's' },
+      { larkAppId: 'p4', larkAppSecret: 's', p2pMode: 'invalid' },
+    ]));
+    expect(cfgs[0].p2pMode).toBe('chat');
+    expect(cfgs[1].p2pMode).toBeUndefined(); // 'thread' normalizes to undefined
+    expect(cfgs[2].p2pMode).toBeUndefined();
+    expect(cfgs[3].p2pMode).toBeUndefined();
+  });
 });

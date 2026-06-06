@@ -153,6 +153,16 @@ export interface BotConfig {
    * (undefined) keeps the streaming card. For users who find the live card noisy.
    */
   disableStreamingCard?: boolean;
+  /**
+   * Conversation mode for 1:1 private chats (DMs) with the bot:
+   *   - 'thread' (default, stored as undefined): every top-level DM message
+   *     starts a fresh thread-scoped session — the official/legacy behavior,
+   *     keeps 1:1 chatter out of one long-running CLI process.
+   *   - 'chat': route DMs as one flat, continuous chat-scoped session (all
+   *     messages share the same context, similar to Hermes/OpenClaw).
+   * Editable at runtime via `/botconfig p2pMode chat|thread` (owner/admin).
+   */
+  p2pMode?: 'thread' | 'chat';
   /** chat_id list: chats where the live streaming card is suppressed (status falls back to master's pending-card morph). Written by `/card off|on`. */
   noCardChats?: string[];
   /**
@@ -646,6 +656,9 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
       // means "use default botmux brand". Don't trim-to-undefined here.
       brandLabel: typeof entry.brandLabel === 'string' ? entry.brandLabel : undefined,
       disableStreamingCard: entry.disableStreamingCard === true || undefined,
+      // Only 'chat' is meaningful; 'thread' (and anything else) normalizes to
+      // undefined — the legacy thread-per-message default. Keeps bots.json clean.
+      p2pMode: entry.p2pMode === 'chat' ? 'chat' : undefined,
       noCardChats: Array.isArray(entry.noCardChats)
         ? entry.noCardChats.filter((x: any): x is string => typeof x === 'string' && x.trim().length > 0).map((x: string) => x.trim())
         : undefined,

@@ -10,6 +10,7 @@ import * as oncallStore from '../services/oncall-store.js';
 import * as brandStore from '../services/brand-store.js';
 import * as cardPrefsStore from '../services/card-prefs-store.js';
 import * as grantPrefsStore from '../services/grant-prefs-store.js';
+import { findConfigField, applyConfigField } from '../services/bot-config-store.js';
 import * as chatFirstSeenStore from '../services/chat-first-seen-store.js';
 import * as scheduler from './scheduler.js';
 import { listActiveSessions, findActiveBySessionId, closeSession, getActiveSessionsRegistry, transferSession } from './worker-pool.js';
@@ -40,7 +41,7 @@ import {
   getBotName,
   type SessionRow,
 } from './dashboard-rows.js';
-import { getBotBrand } from '../bot-registry.js';
+import { getBotBrand, getBot } from '../bot-registry.js';
 import type { ScheduledTask, ParsedSchedule } from '../types.js';
 
 export interface IpcServerHandle {
@@ -607,6 +608,8 @@ ipcRoute('GET', '/api/bot-default-oncall', async (_req, res) => {
   const { defaultOncall, autoboundChats } = oncallStore.getBotDefaultOncall(cachedLarkAppId);
   const cardPrefs = cardPrefsStore.getBotCardPrefs(cachedLarkAppId);
   const grantPrefs = grantPrefsStore.getBotGrantPrefs(cachedLarkAppId);
+  let p2pMode: 'thread' | 'chat' = 'thread';
+  try { if (getBot(cachedLarkAppId).config.p2pMode === 'chat') p2pMode = 'chat'; } catch { /* default thread */ }
   jsonRes(res, 200, {
     larkAppId: cachedLarkAppId,
     botName: getBotName(),
@@ -622,6 +625,7 @@ ipcRoute('GET', '/api/bot-default-oncall', async (_req, res) => {
     regularGroupReplyInThread: cardPrefs.regularGroupReplyInThread,
     restrictGrantCommands: grantPrefs.restrictGrantCommands,
     messageQuotaDefaultLimit: grantPrefs.messageQuotaDefaultLimit,
+    p2pMode,
   });
 });
 
@@ -695,6 +699,25 @@ ipcRoute('PUT', '/api/bot-brand-label', async (req, res) => {
   const r = await brandStore.updateBotBrandLabel(cachedLarkAppId, next);
   if (!r.ok) return jsonRes(res, 400, { ok: false, error: r.reason });
   jsonRes(res, 200, { ok: true, brandLabel: r.brandLabel });
+});
+
+// Per-bot 私聊单聊模式 p2pMode。Body `{ p2pMode: 'chat' | 'thread' }`:
+//   • 'chat'           → 私聊走扁平连续 chat-scope 会话
+//   • 'thread'（默认）  → 清回每条 DM 独立 thread-scope 会话
+// 走 applyConfigField（与 /botconfig 同一写盘 + 热更新路径），保证一致。
+ipcRoute('PUT', '/api/bot-p2p-mode', async (req, res) => {
+  if (!cachedLarkAppId) return jsonRes(res, 503, { error: 'larkAppId_not_set' });
+  let body: { p2pMode?: unknown };
+  try { body = await readJsonBody<{ p2pMode?: unknown }>(req); }
+  catch { return jsonRes(res, 400, { ok: false, error: 'bad_json' }); }
+
+  const spec = findConfigField('p2pMode');
+  if (!spec) return jsonRes(res, 500, { ok: false, error: 'spec_missing' });
+  // 只有 'chat' 有意义；其它（含 'thread'）一律清回默认，bots.json 保持干净。
+  const value = body.p2pMode === 'chat' ? 'chat' : null;
+  const r = await applyConfigField(cachedLarkAppId, spec, value);
+  if (!r.ok) return jsonRes(res, 400, { ok: false, error: r.reason });
+  jsonRes(res, 200, { ok: true, p2pMode: value ?? 'thread' });
 });
 
 ipcRoute('PUT', '/api/bot-default-oncall', async (req, res) => {

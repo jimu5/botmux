@@ -1079,14 +1079,23 @@ async function decideRoutingWithSource(
 ): Promise<RoutingDecision> {
   const rootId: string | undefined = message.root_id;
   const threadId: string | undefined = message.thread_id;
-  if (rootId && threadId) return { scope: 'thread', anchor: rootId, source: 'real-thread' };
-
   const chatType: string = message.chat_type ?? 'group';
   const messageId: string = message.message_id;
   const chatId: string = message.chat_id;
 
-  // 私聊：每条 top-level DM 都视为新话题 — 跟话题群同款，匹配 Lark DM 的话题
-  // 化默认行为，避免无限把 1:1 对话塞进同一个 CLI 进程里。
+  // 私聊 chat 模式：整段 DM 一律折进同一个扁平 chat-scope 会话。必须先于下面的
+  // real-thread（root_id+thread_id）分支判断 —— 否则用户在 DM 里"回复某条消息"
+  // 形成的 thread 形态消息会被提前分流到 thread-scope，破坏"连续单聊会话"语义
+  // （典型触发：thread→chat 模式切换后回复旧 thread，或 Lark 给 DM 回复塞了
+  // thread_id）。仅 p2p 且 p2pMode==='chat' 命中，群聊 / p2p 默认 thread 模式不受影响。
+  if (chatType === 'p2p' && getBot(larkAppId)?.config?.p2pMode === 'chat') {
+    return { scope: 'chat', anchor: chatId, source: 'p2p' };
+  }
+
+  if (rootId && threadId) return { scope: 'thread', anchor: rootId, source: 'real-thread' };
+
+  // 私聊默认（thread 模式）：每条 top-level DM 都视为新话题 — 跟话题群同款，匹配
+  // Lark DM 的话题化默认行为，避免无限把 1:1 对话塞进同一个 CLI 进程里。
   if (chatType === 'p2p') {
     return { scope: 'thread', anchor: messageId, source: 'p2p' };
   }
@@ -1395,7 +1404,10 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
         // route this message as if it were a brand-new thread seed so
         // handleNewTopic spawns a thread-scope session anchored at messageId.
         // Gate on ownsSession to avoid an API roundtrip on every fresh inbound.
-        if (routing.scope === 'chat' && ownsSession) {
+        // Skip p2p: a DM is always 'p2p' and can never be a topic group, so the
+        // check can only waste a forceRefresh roundtrip (relevant now that
+        // p2pMode==='chat' makes DMs land on chat-scope).
+        if (routing.scope === 'chat' && ownsSession && chatType !== 'p2p') {
           const freshMode = await getChatMode(larkAppId, chatId, { forceRefresh: true });
           if (freshMode === 'topic') {
             logger.info(

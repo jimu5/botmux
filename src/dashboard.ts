@@ -855,6 +855,7 @@ const server = createServer(async (req, res) => {
             regularGroupReplyInThread: j.regularGroupReplyInThread === true,
             restrictGrantCommands: j.restrictGrantCommands === true,
             messageQuotaDefaultLimit: typeof j.messageQuotaDefaultLimit === 'number' ? j.messageQuotaDefaultLimit : null,
+            p2pMode: j.p2pMode === 'chat' ? 'chat' : 'thread',
           };
         } catch (e: any) {
           return { larkAppId: d.larkAppId, botName: d.botName, online: true, error: e?.message ?? String(e) };
@@ -906,6 +907,25 @@ const server = createServer(async (req, res) => {
       for await (const c of req) chunks.push(c as Buffer);
       const raw = Buffer.concat(chunks).toString('utf8') || '{}';
       const upstream = await proxyToDaemon(appId, `/api/bot-card-prefs`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: raw,
+      });
+      res.writeHead(upstream.status, { 'content-type': 'application/json' });
+      res.end(await upstream.text());
+      return;
+    }
+
+    // PUT /api/bots/:appId/p2p-mode — proxy to that bot's daemon. Body
+    // `{ p2pMode: 'chat' | 'thread' }` ('chat' = flat continuous DM session;
+    // anything else clears back to the per-message thread default).
+    let mBotP2pMode: RegExpMatchArray | null;
+    if (req.method === 'PUT' && (mBotP2pMode = url.pathname.match(/^\/api\/bots\/([^/]+)\/p2p-mode$/))) {
+      const appId = decodeURIComponent(mBotP2pMode[1]);
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const raw = Buffer.concat(chunks).toString('utf8') || '{}';
+      const upstream = await proxyToDaemon(appId, `/api/bot-p2p-mode`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: raw,

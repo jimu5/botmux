@@ -63,6 +63,7 @@ export const CONFIG_FIELDS: readonly ConfigFieldSpec[] = [
   { key: 'autoStartOnNewTopic', configKey: 'autoStartOnNewTopic', kind: 'boolean', effect: 'immediate', clearable: false, hint: '话题群每个新话题自动开工 on|off' },
   { key: 'disableCliBypass', configKey: 'disableCliBypass', kind: 'boolean', effect: 'next-session', clearable: false, hint: '不加 CLI 审批/sandbox 绕过参数 on|off' },
   { key: 'restrictGrantCommands', configKey: 'restrictGrantCommands', kind: 'boolean', effect: 'immediate', clearable: false, hint: '被授权人仅能纯对话、拦截斜杠命令 on|off' },
+  { key: 'p2pMode', configKey: 'p2pMode', kind: 'enum', effect: 'immediate', clearable: true, enumValues: ['thread', 'chat'], hint: '私聊单聊模式 thread|chat；chat=扁平连续会话，thread/unset 回默认（每条 DM 独立会话）' },
 ];
 
 /** 大小写不敏感地按 key 找字段 spec。 */
@@ -262,6 +263,8 @@ export interface ConfigCardData {
   model: string | null;
   modelChoices: string[];
   lang: string | null;
+  /** 私聊单聊模式 p2pMode（'chat' | 'thread'）；null = 未设（默认 thread）。 */
+  p2pMode: string | null;
   brandLabel: string | null;
   defaultWorkingDir: string | null;
   /** 入群主动开工首轮 prompt（autoStartOnGroupJoinPrompt）。 */
@@ -287,6 +290,7 @@ export function getConfigCardData(larkAppId: string, modelChoices: readonly stri
     model: cfg.model ?? null,
     modelChoices: [...modelChoices],
     lang: cfg.lang ?? null,
+    p2pMode: cfg.p2pMode ?? null,
     brandLabel: cfg.brandLabel ?? null,
     defaultWorkingDir: cfg.defaultWorkingDir ?? null,
     autoStartPrompt: cfg.autoStartOnGroupJoinPrompt ?? null,
