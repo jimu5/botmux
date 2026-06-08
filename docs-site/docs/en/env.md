@@ -6,7 +6,8 @@
 |------|------|------|
 | `BOTS_CONFIG` | _(unset)_ | Path to bots.json (overrides the default location) |
 | `WEB_HOST` | `0.0.0.0` | HTTP service bind address |
-| `WEB_EXTERNAL_HOST` | _(auto-detect LAN IP)_ | External hostname/IP used in terminal links |
+| `WEB_EXTERNAL_HOST` | _(auto-detect LAN IP)_ | External hostname/IP used in terminal links (for public/intranet-domain access, see [Web Terminal](/en/web-terminal)) |
+| `WEB_EXTERNAL_PORT` | _(local proxy port)_ | External port used in terminal links, overriding the local proxy port (`8800 + botIndex`) so a relay host can listen on a different port number; in a multi-bot setup it's the base port, with the actual port being `WEB_EXTERNAL_PORT + botIndex` (see [Web Terminal](/en/web-terminal)) |
 | `SESSION_DATA_DIR` | `~/.botmux/data` | Session and queue storage directory |
 | `BACKEND_TYPE` | _(auto-detect)_ | `pty` forces a downgrade to pure pty mode |
 | `DEBUG` | _(unset)_ | Set to `1` to enable debug logging |
