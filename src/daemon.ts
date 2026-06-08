@@ -1747,17 +1747,15 @@ ipcRoute('POST', '/api/asks', async (req, res) => {
   return jsonRes(res, 200, result);
 });
 
-// ─── botmux attention IPC route (agent raise-hand) ───────────────────────────
+// ─── attention IPC route (internal: set needs-you state) ─────────────────────
 //
-// CLI side: `botmux attention raise --kind <k> "<reason>"` / `botmux attention
-// clear`. Unlike /api/asks this NEVER blocks — the agent flags it hit a blocker
-// only a human can clear, then ends its turn. We flip ds.agentAttention,
-// publish the dashboard patch (lights the needs-you column with the reason),
-// emit the requires_attention hook, and ping the thread so the human is also
-// notified in chat. Cleared on the user's next reply (see inbound handler),
-// on `attention clear`, or on session close.
+// NOT an agent-facing command. `botmux send --attention` posts the message
+// (direct to Lark) and then calls this to flip ds.agentAttention so the
+// dashboard needs-you column lights up with the reason. Raise-only — clearing
+// happens on the user's next reply (clearAgentAttentionForHumanInbound) or on
+// session close. No thread ping here: `send` already delivered the message.
 ipcRoute('POST', '/api/attention', async (req, res) => {
-  let raw: { sessionId?: unknown; action?: unknown; kind?: unknown; reason?: unknown };
+  let raw: { sessionId?: unknown; kind?: unknown; reason?: unknown };
   try {
     raw = await readJsonBody(req);
   } catch {
@@ -1765,21 +1763,12 @@ ipcRoute('POST', '/api/attention', async (req, res) => {
   }
   const sessionId = typeof raw.sessionId === 'string' ? raw.sessionId : '';
   if (!sessionId) return jsonRes(res, 400, { ok: false, error: 'missing_sessionId' });
-  const action = raw.action === 'clear' ? 'clear' : 'raise';
 
   let ds: DaemonSession | undefined;
   for (const s of activeSessions.values()) {
     if (s.session.sessionId === sessionId) { ds = s; break; }
   }
   if (!ds) return jsonRes(res, 404, { ok: false, error: 'session_not_found' });
-
-  if (action === 'clear') {
-    if (ds.agentAttention) {
-      ds.agentAttention = undefined;
-      publishAttentionPatch(ds);
-    }
-    return jsonRes(res, 200, { ok: true, action: 'clear' });
-  }
 
   const reason = typeof raw.reason === 'string' ? raw.reason.replace(/\s+/g, ' ').trim().slice(0, 500) : '';
   if (!reason) return jsonRes(res, 400, { ok: false, error: 'missing_reason' });
@@ -1789,14 +1778,7 @@ ipcRoute('POST', '/api/attention', async (req, res) => {
   ds.agentAttention = { kind, reason, at: Date.now() };
   publishAttentionPatch(ds);
   emitSessionLifecycleHook(ds, 'session.requires_attention', { reason: 'agent_request', kind, message: reason });
-  // Ping the thread too — the human watches the dashboard OR the chat; the card
-  // delivery failing must not fail the raise (the dashboard signal already landed).
-  try {
-    await sessionReply(sessionAnchorId(ds), tr('daemon.attention_raised', { reason }, localeForBot(ds.larkAppId)), 'text', ds.larkAppId);
-  } catch (err) {
-    logger.warn(`[attention] thread ping failed for ${sessionId.substring(0, 8)}: ${err}`);
-  }
-  return jsonRes(res, 200, { ok: true, action: 'raise' });
+  return jsonRes(res, 200, { ok: true });
 });
 
 // ─── hooks emit 转发端点 ────────────────────────────────────────────────────

@@ -560,5 +560,4 @@ export const messages: Record<string, string> = {
   'daemon.cmd_needs_active_cli': '{cmd} needs an active CLI process; no running session in this topic.',
   'daemon.enriched_mentions_label': '@mentions in this message:',
   'daemon.choose_repo_first': 'Pick a repo from the card above first — your message is queued and will be sent once a repo is chosen.',
-  'daemon.attention_raised': '🙋 This task needs your input: {reason}',
 };

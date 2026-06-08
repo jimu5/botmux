@@ -563,5 +563,4 @@ export const messages: Record<string, string> = {
   'daemon.cmd_needs_active_cli': '{cmd} 需要活跃的 CLI 进程，当前话题无运行中的会话。',
   'daemon.enriched_mentions_label': '消息中的 @mention：',
   'daemon.choose_repo_first': '请先在上方卡片中选择仓库，您的消息已暂存，选择后会自动发送。',
-  'daemon.attention_raised': '🙋 该任务需要你介入：{reason}',
 };

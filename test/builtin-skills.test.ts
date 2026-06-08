@@ -136,19 +136,32 @@ describe('built-in botmux-worker-budget skill', () => {
   });
 });
 
-describe('built-in botmux-needs-help skill', () => {
-  it('teaches the raise/clear commands and gates triggering to real blockers', () => {
-    const skill = BUILTIN_SKILLS.find(s => s.name === 'botmux-needs-help');
-    expect(skill).toBeDefined();
-    expect(skill!.content).toContain('botmux attention raise');
-    expect(skill!.content).toContain('botmux attention clear');
-    expect(skill!.content).toContain('--kind');
-    // Description must steer agents AWAY from misuse (progress reports / ask).
-    expect(skill!.content).toContain('botmux ask');
-    expect(skill!.content).toContain('botmux send');
-    // Non-blocking + auto-clear-on-reply is the core contract.
-    expect(skill!.content).toContain('非阻塞');
-    expect(skill!.content).toContain('自动撤下');
+describe('agent raise-hand folded into botmux-send (--attention)', () => {
+  it('botmux-needs-help is retired, not a standalone skill', () => {
+    expect(BUILTIN_SKILLS.find(s => s.name === 'botmux-needs-help')).toBeUndefined();
+    expect(RETIRED_SKILL_NAMES).toContain('botmux-needs-help');
+  });
+
+  it('botmux-send description mentions --attention so a blocked agent discovers it', () => {
+    const send = BUILTIN_SKILLS.find(s => s.name === 'botmux-send');
+    expect(send).toBeDefined();
+    // Skills are matched by DESCRIPTION — the blocked-scenario trigger must live
+    // in the frontmatter, or a stuck agent won't realize send has --attention.
+    const fm = send!.content.split('---')[1] ?? '';
+    expect(fm).toContain('--attention');
+    expect(fm).toMatch(/硬阻碍|需要人|授权/);
+  });
+
+  it('botmux-send body teaches --attention usage + abuse boundaries', () => {
+    const send = BUILTIN_SKILLS.find(s => s.name === 'botmux-send')!;
+    expect(send.content).toContain('botmux send --attention');
+    expect(send.content).toContain('--attention=decision');
+    // non-blocking + auto-clear contract, and steer to ask for option-choices
+    expect(send.content).toContain('非阻塞');
+    expect(send.content).toContain('自动撤下');
+    expect(send.content).toContain('botmux ask');
+    // guards documented: not with --top-level/--chat-id/--into
+    expect(send.content).toContain('--top-level');
   });
 });
 

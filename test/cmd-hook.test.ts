@@ -290,19 +290,21 @@ describe('runHook', () => {
     });
   });
 
-  describe('workflow 里 botmux attention 拒绝（源码 gate 守卫）', () => {
-    it('cmdAttention 含 BOTMUX_WORKFLOW gate + exit 2 拒绝', () => {
+  describe('workflow 里举手走 send 自身的 gate（attention 已并入 send，不再是独立命令）', () => {
+    it('cmdAttention 已移除，send --attention 由 send 的 BOTMUX_WORKFLOW gate 覆盖', () => {
       const src = readFileSync(
         new URL('../src/cli.ts', import.meta.url),
         'utf-8',
       );
-      const cmdAttentionIdx = src.indexOf('async function cmdAttention(');
-      expect(cmdAttentionIdx).toBeGreaterThanOrEqual(0);
-      const region = src.slice(cmdAttentionIdx, cmdAttentionIdx + 1500);
+      // 独立 `botmux attention` 命令已删除——举手并入 `botmux send --attention`。
+      expect(src.includes('async function cmdAttention(')).toBe(false);
+      // send 顶部已有 workflow-subagent gate（subagent 里 send 直接 refused），
+      // --attention 是 send 的一个 flag，因此天然被同一道 gate 覆盖。
+      const cmdSendIdx = src.indexOf('async function cmdSend(');
+      expect(cmdSendIdx).toBeGreaterThanOrEqual(0);
+      const region = src.slice(cmdSendIdx, cmdSendIdx + 1500);
       expect(region).toContain("process.env.BOTMUX_WORKFLOW === '1'");
       expect(region).toContain('process.exit(2)');
-      expect(region.toLowerCase()).toContain('refused');
-      expect(region).toContain('humanGate / decision');
     });
   });
 });

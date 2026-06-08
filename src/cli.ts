@@ -2354,6 +2354,12 @@ botmux v${getVersion()} — IM ↔ AI 编程 CLI 桥接
        --voice "<口语文字>"            合成语音气泡发出（需先 botmux voice 配置 TTS）
        --top-level                     发顶层消息（不回复进当前话题）
        --chat-id <oc_xxx>              指定目标群（默认当前话题所在群）
+       --attention[=kind]              举手：发消息的同时把本会话标进 dashboard
+                                       「需要你」列并通知你——撞到只有你能解的硬阻碍
+                                       （授权/拍板/缺权限）无法继续时用。消息正文即看板
+                                       原因。kind=authz|decision|blocked(默认)|help。
+                                       仅限回复当前会话，不能与 --top-level/--chat-id/--into
+                                       混用；用户回复后自动撤下。
        --anyway                        跳过「@ 到活跃子 bot」护栏强发（见下）
     @ 硬门：每条回复须三选一 --mention/--mention-back/--no-mention，否则报错不发。
     按内容价值选：有实质结论要对方看/确认/决策→--mention-back(或--mention点名)；
@@ -2814,7 +2820,7 @@ import { buildCardBodyElements, brandFooterSegment } from './im/lark/md-card.js'
 import { COMPLETED_REACTION_EMOJI_TYPE, claimPendingResponseCard, isPendingResponseCardOpen, markPendingResponseCardPatchedIfCurrent, mergePendingResponseState, shouldMarkPendingAsMentionedSend, shouldPatchPendingOnExplicitSend } from './core/pending-response.js';
 import { resolveBrandLabel } from './bot-registry.js';
 import { config } from './config.js';
-import { resolveQuoteTarget, validateMentionDecision } from './services/send-policy.js';
+import { resolveQuoteTarget, validateMentionDecision, parseAttentionFlag, attentionUsageError } from './services/send-policy.js';
 
 async function cmdSend(rest: string[]): Promise<void> {
   // Safety gate: a CLI agent running inside a workflow subagent (Slice F)
@@ -2861,6 +2867,10 @@ async function cmdSend(rest: string[]): Promise<void> {
   // @ hard-gate: every reply must explicitly choose one of these.
   const mentionBack = rest.includes('--mention-back');
   const noMention = rest.includes('--no-mention');
+  // --attention[=kind]: raise a hand — post this message AND light the dashboard
+  // needs-you column for this session. Parsed specially (not argValue) so a bare
+  // `--attention "我卡住了"` doesn't eat the message as the flag value.
+  const attention = parseAttentionFlag(rest);
 
   const ancestorCtx = findAncestorSessionContext();
   const sid = sessionIdArg ?? ancestorCtx?.sessionId ?? null;
@@ -2881,7 +2891,7 @@ async function cmdSend(rest: string[]): Promise<void> {
     if (!existsSync(contentFile)) { console.error(`文件不存在: ${contentFile}`); process.exit(1); }
     content = readFileSync(contentFile, 'utf-8');
   } else {
-    const pos = positionals(rest, ['--card', '--text', '--top-level', '--no-quote', '--mention-back', '--no-mention', '--anyway', '--voice']);
+    const pos = positionals(rest, ['--card', '--text', '--top-level', '--no-quote', '--mention-back', '--no-mention', '--anyway', '--voice', '--attention']);
     if (pos.length > 0) {
       content = pos.join(' ');
     } else {
@@ -2893,6 +2903,17 @@ async function cmdSend(rest: string[]): Promise<void> {
     console.error('没有内容可发送。用法:\n  echo "消息" | botmux send\n  botmux send "消息"\n  botmux send --content-file /tmp/msg.md --images /tmp/chart.png');
     process.exit(1);
   }
+
+  // --attention guard: only valid replying into the current session with a text
+  // reason (clear-on-reply binds to this anchor; dashboard needs a reason).
+  const attentionErr = attentionUsageError({
+    requested: attention.requested,
+    sendTopLevel,
+    overrideChatId,
+    sendInto,
+    hasText: !!content.trim(),
+  });
+  if (attentionErr) { console.error(`botmux send: ${attentionErr}`); process.exit(2); }
 
   // ── Voice mode ──────────────────────────────────────────────────────────
   // Synthesize the (already-condensed, colloquial) content into a Feishu voice
@@ -3430,12 +3451,39 @@ async function cmdSend(rest: string[]): Promise<void> {
       ? `@${mentions.map(m => m.name || m.open_id).join(',')}`
       : '未@任何人';
     console.error(`✓ 已发送 ${messageId} ｜ ${primaryQuotedId ? `引用 ${primaryQuotedId}` : '未引用'} ｜ ${atSummary}`);
+
+    // --attention: message is already delivered above; now flip the dashboard
+    // needs-you state via the daemon (botmux send is direct-to-Lark, so the
+    // daemon-held ds.agentAttention must be set out-of-band). Best-effort: a
+    // failure here must NOT fail the send (else the agent retries → duplicate
+    // messages) — warn on stderr and surface in the JSON for log observability.
+    let attentionRaised: boolean | undefined;
+    let attentionError: string | undefined;
+    if (attention.requested) {
+      try {
+        const daemon = findDaemon(appId);
+        if (!daemon) throw new Error(`找不到 daemon (larkAppId=${appId})`);
+        const res = await fetch(`http://127.0.0.1:${daemon.ipcPort}/api/attention`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sessionId: sid, larkAppId: appId, action: 'raise', kind: attention.kind, reason: content.trim() }),
+        });
+        if (!res.ok) throw new Error(`daemon HTTP ${res.status}`);
+        attentionRaised = true;
+        console.error(`🙋 已举手：本会话已进 dashboard「需要你」列（用户回复后自动撤下）`);
+      } catch (err) {
+        attentionRaised = false;
+        attentionError = err instanceof Error ? err.message : String(err);
+        console.error(`⚠️ 消息已发送，但举手(needs-you)置位失败（不影响消息）：${attentionError}`);
+      }
+    }
     console.log(JSON.stringify({
       success: true,
       messageId,
       sessionId: sid,
       quotedMessageId: primaryQuotedId,
       mentioned: mentions.map(m => ({ open_id: m.open_id, name: m.name })),
+      ...(attention.requested ? { attentionRaised, attentionError } : {}),
     }));
   } catch (err: any) {
     console.error(`发送失败: ${err.message}`);
@@ -4114,83 +4162,6 @@ async function cmdAsk(sub: string, rest: string[]): Promise<void> {
       console.error(`botmux ask: 已失效 (${result.reason})`);
       process.exit(3);
   }
-}
-
-// ─── botmux attention (agent raise-hand) ─────────────────────────────────────
-//
-// A CLI agent inside a botmux session calls `botmux attention raise --kind
-// <authz|decision|blocked|help> "<reason>"` when it hits a blocker only a human
-// can clear, then ends its turn. Non-blocking (unlike `ask`): POSTs to the
-// daemon, which lights the dashboard needs-you column + pings the thread. The
-// signal auto-clears when the user replies; `botmux attention clear` removes it
-// early if the agent unblocks itself.
-async function cmdAttention(sub: string, rest: string[]): Promise<void> {
-  // Same workflow-subagent safety posture as `send` and `ask`: raising a chat
-  // needs-you signal from inside a workflow node would bypass the run's gate /
-  // decision event log. Workflow blockers should be modeled in the workflow.
-  if (process.env.BOTMUX_WORKFLOW === '1') {
-    const runId = process.env.BOTMUX_WORKFLOW_RUN_ID ?? '?';
-    const nodeId = process.env.BOTMUX_WORKFLOW_NODE_ID ?? '?';
-    console.error(
-      `botmux attention refused inside workflow subagent (run=${runId} node=${nodeId}).\n` +
-        `Workflow subagents must surface blockers via humanGate / decision nodes\n` +
-        `so the resolution is recorded in the run's event log; attention would bypass it.`,
-    );
-    process.exit(2);
-  }
-
-  if (sub && sub !== 'raise' && sub !== 'clear') {
-    console.error(`botmux attention: 未知 subcommand "${sub}"（支持 raise | clear）`);
-    process.exit(2);
-  }
-  const action = sub === 'clear' ? 'clear' : 'raise';
-
-  const sessionId = process.env.BOTMUX_SESSION_ID;
-  const larkAppId = process.env.BOTMUX_LARK_APP_ID;
-  if (!sessionId || !larkAppId) {
-    console.error('botmux attention: 缺少 BOTMUX_SESSION_ID / BOTMUX_LARK_APP_ID。请在 botmux daemon spawn 的 CLI 会话内运行。');
-    process.exit(2);
-  }
-
-  const body: Record<string, unknown> = { sessionId, larkAppId, action };
-  if (action === 'raise') {
-    const reason = (argValue(rest, '--reason') ?? positionals(rest).join(' ')).trim();
-    if (!reason) {
-      console.error('botmux attention: 缺少 reason。用法: botmux attention raise --kind authz "需要 prod 部署授权"');
-      process.exit(2);
-    }
-    body.reason = reason;
-    const kind = argValue(rest, '--kind');
-    if (kind) body.kind = kind;
-  }
-
-  const daemon = findDaemon(larkAppId);
-  if (!daemon) {
-    console.error(`botmux attention: 找不到 daemon (larkAppId=${larkAppId})。daemon 已停？`);
-    process.exit(3);
-  }
-
-  let res: Response;
-  try {
-    res = await fetch(`http://127.0.0.1:${daemon.ipcPort}/api/attention`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  } catch (err) {
-    console.error(`botmux attention: 无法连接 daemon (port=${daemon.ipcPort}): ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(3);
-  }
-  if (!res.ok) {
-    let errBody = '';
-    try { errBody = (await res.text()).slice(0, 200); } catch { /* */ }
-    console.error(`botmux attention: daemon HTTP ${res.status}: ${errBody}`);
-    process.exit(3);
-  }
-  process.stdout.write(action === 'raise'
-    ? '🙋 已在 dashboard 举手，等待人工介入（用户回复后自动撤下）。\n'
-    : '✅ 已撤下举手信号。\n');
-  process.exit(0);
 }
 
 // ─── botmux hook <cliId> ──────────────────────────────────────────────────────
@@ -4922,7 +4893,6 @@ switch (command) {
     await cmdHook(cliId);
     break;
   }
-  case 'attention': await cmdAttention(process.argv[3] ?? '', process.argv.slice(4)); break;
   case 'workflow': {
     const { cmdWorkflow } = await import('./cli/workflow.js');
     await cmdWorkflow(process.argv[3] ?? '', process.argv.slice(4));
