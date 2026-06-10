@@ -26,7 +26,7 @@ import { findUniqueClaudeSessionByCwd } from './session-discovery.js';
 import { buildMarkdownCard, buildContextualReplyCard } from '../im/lark/md-card.js';
 import { TmuxBackend } from '../adapters/backend/tmux-backend.js';
 import { HerdrBackend } from '../adapters/backend/herdr-backend.js';
-import { ZellijBackend } from '../adapters/backend/zellij-backend.js';
+import { isSuspendableBackendType, getSessionPersistentBackendType, persistentSessionName, killPersistentSession } from './persistent-backend.js';
 import { getBot, getAllBots, resolveBrandLabel } from '../bot-registry.js';
 import { normalizeBrand } from '../im/lark/lark-hosts.js';
 import { dashboardEventBus } from './dashboard-events.js';
@@ -35,7 +35,6 @@ import { publishAttentionPatch } from './session-activity.js';
 import { knownBotOpenIdsFromCrossRef, type BotMentionEntry } from '../utils/bot-routing.js';
 import { emitSessionLifecycleHook, emitSessionStateTransitionHook } from '../services/session-lifecycle-hooks.js';
 import type { CliId } from '../adapters/cli/types.js';
-import type { BackendType } from '../adapters/backend/types.js';
 import type { DaemonToWorker, WorkerToDaemon, Session, DisplayMode } from '../types.js';
 import { sessionKey, sessionAnchorId, type DaemonSession } from './types.js';
 import { claimPendingResponseCard, COMPLETED_REACTION_EMOJI_TYPE, markPendingResponseCardPatchedIfCurrent, syncPendingResponseState } from './pending-response.js';
@@ -988,21 +987,6 @@ export function killWorker(ds: DaemonSession): void {
   ds.workerToken = null;
 }
 
-export function isSuspendableBackendType(backendType: BackendType | undefined): boolean {
-  return backendType === 'tmux' || backendType === 'herdr' || backendType === 'zellij';
-}
-
-/** Resolve a session's backend type when killing it without a live worker:
- *  prefer the worker's stored init config, then the bot/daemon config. */
-function resolveBackendTypeForKill(ds: DaemonSession): BackendType | undefined {
-  if (ds.initConfig?.backendType) return ds.initConfig.backendType;
-  try {
-    const cfg = getBot(ds.larkAppId).config.backendType;
-    if (cfg) return cfg;
-  } catch { /* bot not registered — fall through to daemon default */ }
-  return config.daemon.backendType;
-}
-
 /**
  * Tear down a persistent backing session (tmux/herdr/zellij) directly from the
  * daemon when there is no live worker to do it via the 'close' IPC. The session
@@ -1015,15 +999,10 @@ function resolveBackendTypeForKill(ds: DaemonSession): BackendType | undefined {
  */
 function destroyOrphanedBackingSession(ds: DaemonSession): void {
   if (ds.initConfig?.adoptMode || ds.adoptedFrom) return;
-  const backendType = resolveBackendTypeForKill(ds);
-  if (!isSuspendableBackendType(backendType)) return;
-  const sessionId = ds.session.sessionId;
+  const backendType = getSessionPersistentBackendType(ds);
+  if (!backendType) return;
   try {
-    switch (backendType) {
-      case 'tmux': TmuxBackend.killSession(TmuxBackend.sessionName(sessionId)); break;
-      case 'herdr': HerdrBackend.killSession(HerdrBackend.sessionName(sessionId)); break;
-      case 'zellij': ZellijBackend.killSession(ZellijBackend.sessionName(sessionId)); break;
-    }
+    killPersistentSession(backendType, persistentSessionName(backendType, ds.session.sessionId));
     logger.info(`[${tag(ds)}] killWorker: no live worker — destroyed orphaned ${backendType} backing session`);
   } catch (err) {
     logger.warn(`[${tag(ds)}] killWorker: failed to destroy orphaned ${backendType} backing session: ${err}`);
