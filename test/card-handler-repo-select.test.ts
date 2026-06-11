@@ -265,6 +265,44 @@ describe('repo select card — worktree open', () => {
     expect(sessionReply.mock.calls.map(c => c[1]).join()).toContain('未自动切换');
   });
 
+  it('re-checks the generation AFTER the created notice — a plain switch landing during the reply wins', async () => {
+    const ds = makeDs({ pendingRepo: true, pendingPrompt: 'hi', worker: null });
+    const { deps, sessionReply } = makeDeps(ds);
+    vi.mocked(createRepoWorktree).mockResolvedValue({ path: '/repos/alpha-wt-1', branch: 'wt/1', baseRef: 'origin/master' });
+    // The created notice is a Lark round-trip; a plain selection (NOT gated by
+    // worktreeCreating) can consume pendingRepo in that window. Simulate it
+    // from inside the reply itself.
+    vi.mocked(deps.sessionReply).mockImplementation(async (_root, text) => {
+      if (typeof text === 'string' && text.includes('worktree 已创建：') && ds.pendingRepo) ds.pendingRepo = false;
+      return 'om_reply';
+    });
+
+    await handleCardAction(makeSelectEvent('repo_worktree', '/repos/alpha'), deps, APP_ID);
+    await vi.waitFor(() => expect(ds.worktreeCreating).toBe(false));
+
+    // The post-reply guard must catch the swap: no fork, no kill, no switch.
+    expect(forkWorker).not.toHaveBeenCalled();
+    expect(killWorker).not.toHaveBeenCalled();
+    expect(ds.workingDir).toBeUndefined();
+    expect(sessionReply.mock.calls.map(c => c[1]).join()).toContain('未自动切换');
+  });
+
+  it('reports a switch failure as such — the worktree DOES exist on disk', async () => {
+    const ds = makeDs({ pendingRepo: true, pendingPrompt: 'hi', worker: null });
+    const { deps, sessionReply } = makeDeps(ds);
+    vi.mocked(createRepoWorktree).mockResolvedValue({ path: '/repos/alpha-wt-1', branch: 'wt/1', baseRef: 'origin/master' });
+    vi.mocked(forkWorker).mockImplementationOnce(() => { throw new Error('fork boom'); });
+
+    await handleCardAction(makeSelectEvent('repo_worktree', '/repos/alpha'), deps, APP_ID);
+    await vi.waitFor(() => expect(ds.worktreeCreating).toBe(false));
+
+    const replies = sessionReply.mock.calls.map(c => c[1]).join();
+    expect(replies).toContain('自动切换失败');
+    expect(replies).toContain('fork boom');
+    // NOT a creation failure — retrying as one would trip "already exists".
+    expect(replies).not.toContain('创建 worktree 失败');
+  });
+
   it('creation failure replies an error and releases the in-flight lock', async () => {
     const ds = makeDs({ pendingRepo: true, pendingPrompt: 'hi', worker: null });
     const { deps, sessionReply } = makeDeps(ds);

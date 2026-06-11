@@ -1584,21 +1584,39 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
     // afterwards would kill that fresh session — notify instead of switching.
     const startSessionId = targetDs.session.sessionId;
     const wasPending = !!targetDs.pendingRepo;
+    const sessionChanged = () =>
+      targetDs.session.sessionId !== startSessionId || !!targetDs.pendingRepo !== wasPending;
+    const notSwitched = async (creation: { path: string; branch: string }, when: string) => {
+      logger.info(`[${tag(targetDs)}] Worktree ${creation.path} created but session changed ${when} — not switching`);
+      await sessionReply(rootId, t('cmd.repo.worktree_created_not_switched', { path: creation.path, branch: creation.branch }, locTarget));
+    };
     void (async () => {
       try {
-        const creation = await createRepoWorktree(selectedPath);
-        if (targetDs.session.sessionId !== startSessionId || !!targetDs.pendingRepo !== wasPending) {
-          logger.info(`[${tag(targetDs)}] Worktree ${creation.path} created but session changed mid-flight — not switching`);
-          await sessionReply(rootId, t('cmd.repo.worktree_created_not_switched', { path: creation.path, branch: creation.branch }, locTarget));
+        let creation;
+        try {
+          creation = await createRepoWorktree(selectedPath);
+        } catch (e) {
+          logger.warn(`[${tag(targetDs)}] Worktree creation failed for ${selectedPath}: ${e instanceof Error ? e.message : e}`);
+          await sessionReply(rootId, t('cmd.repo.worktree_failed', { error: e instanceof Error ? e.message : String(e) }, locTarget));
           return;
         }
+        if (sessionChanged()) return notSwitched(creation, 'mid-flight');
         await sessionReply(rootId, t('cmd.repo.worktree_created', {
           path: creation.path, branch: creation.branch, base: creation.baseRef,
         }, locTarget));
-        await commitSelection(creation.path, `${pathBasename(creation.path)} (${creation.branch})`);
-      } catch (e) {
-        logger.warn(`[${tag(targetDs)}] Worktree creation failed for ${selectedPath}: ${e instanceof Error ? e.message : e}`);
-        await sessionReply(rootId, t('cmd.repo.worktree_failed', { error: e instanceof Error ? e.message : String(e) }, locTarget));
+        // The reply above awaited a Lark round-trip — a plain switch (which is
+        // NOT gated by worktreeCreating) can land in that window. Re-check
+        // right before committing, or we'd kill the session it just spawned.
+        if (sessionChanged()) return notSwitched(creation, 'during reply');
+        try {
+          await commitSelection(creation.path, `${pathBasename(creation.path)} (${creation.branch})`);
+        } catch (e) {
+          // The worktree DOES exist at this point — only the switch failed.
+          // Don't report it as a creation failure, or the user retries and
+          // trips over "worktree target already exists".
+          logger.warn(`[${tag(targetDs)}] Worktree ${creation.path} created but switching failed: ${e instanceof Error ? e.message : e}`);
+          await sessionReply(rootId, t('cmd.repo.worktree_switch_failed', { path: creation.path, error: e instanceof Error ? e.message : String(e) }, locTarget));
+        }
       } finally {
         targetDs.worktreeCreating = false;
       }

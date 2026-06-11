@@ -1134,25 +1134,47 @@ export async function handleCommand(
           // session it just spawned. Mirror of the card-side guard.
           const startSessionId = ds.session.sessionId;
           const wasPending = !!ds.pendingRepo;
-          await sessionReply(rootId, t('cmd.repo.worktree_creating', { repo: repoPath }, loc));
-          let creation;
+          const wtSessionChanged = () =>
+            ds!.session.sessionId !== startSessionId || !!ds!.pendingRepo !== wasPending;
+          // Hold the in-flight lock through commit (matching the card path) —
+          // releasing it right after `git` would let a second `/repo wt` start
+          // while this one is still replying/committing.
           try {
-            creation = await createRepoWorktree(repoPath, { branch: branchArg });
-          } catch (e) {
-            await sessionReply(rootId, t('cmd.repo.worktree_failed', { error: e instanceof Error ? e.message : String(e) }, loc));
-            break;
+            await sessionReply(rootId, t('cmd.repo.worktree_creating', { repo: repoPath }, loc));
+            let creation;
+            try {
+              creation = await createRepoWorktree(repoPath, { branch: branchArg });
+            } catch (e) {
+              await sessionReply(rootId, t('cmd.repo.worktree_failed', { error: e instanceof Error ? e.message : String(e) }, loc));
+              break;
+            }
+            if (wtSessionChanged()) {
+              logger.info(`[${logTag}] Worktree ${creation.path} created but session changed mid-flight — not switching`);
+              await sessionReply(rootId, t('cmd.repo.worktree_created_not_switched', { path: creation.path, branch: creation.branch }, loc));
+              break;
+            }
+            await sessionReply(rootId, t('cmd.repo.worktree_created', {
+              path: creation.path, branch: creation.branch, base: creation.baseRef,
+            }, loc));
+            // The reply above awaited a Lark round-trip — a plain selection
+            // (not gated by worktreeCreating) can land in that window. Re-check
+            // right before committing. Mirror of the card-side double guard.
+            if (wtSessionChanged()) {
+              logger.info(`[${logTag}] Worktree ${creation.path} created but session changed during reply — not switching`);
+              await sessionReply(rootId, t('cmd.repo.worktree_created_not_switched', { path: creation.path, branch: creation.branch }, loc));
+              break;
+            }
+            try {
+              await commitRepoSelection(creation.path, `${basename(creation.path)} (${creation.branch})`, `/repo wt`);
+            } catch (e) {
+              // The worktree DOES exist — only the switch failed. Don't report
+              // it as a creation failure, or a retry trips over "already exists".
+              logger.warn(`[${logTag}] Worktree ${creation.path} created but switching failed: ${e instanceof Error ? e.message : e}`);
+              await sessionReply(rootId, t('cmd.repo.worktree_switch_failed', { path: creation.path, error: e instanceof Error ? e.message : String(e) }, loc));
+            }
           } finally {
             ds.worktreeCreating = false;
           }
-          if (ds.session.sessionId !== startSessionId || !!ds.pendingRepo !== wasPending) {
-            logger.info(`[${logTag}] Worktree ${creation.path} created but session changed mid-flight — not switching`);
-            await sessionReply(rootId, t('cmd.repo.worktree_created_not_switched', { path: creation.path, branch: creation.branch }, loc));
-            break;
-          }
-          await sessionReply(rootId, t('cmd.repo.worktree_created', {
-            path: creation.path, branch: creation.branch, base: creation.baseRef,
-          }, loc));
-          await commitRepoSelection(creation.path, `${basename(creation.path)} (${creation.branch})`, `/repo wt`);
           break;
         }
 

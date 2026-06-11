@@ -230,6 +230,7 @@ export const messages: Record<string, string> = {
   'cmd.repo.worktree_failed': '❌ Worktree creation failed: {error}',
   'cmd.repo.worktree_in_progress': '⏳ A worktree is already being created — please wait…',
   'cmd.repo.worktree_created_not_switched': '🌿 Worktree created: `{path}` (branch `{branch}`), but the session changed meanwhile — not switched automatically. Use `/repo {path}` to open it.',
+  'cmd.repo.worktree_switch_failed': '⚠️ Worktree created at `{path}`, but switching to it failed: {error}\nUse `/repo {path}` to open it manually.',
   'cmd.skip.opened': '▶️ Session started (working dir: {cwd})',
   'cmd.status.running': 'running',
   'cmd.status.waiting': 'idle',
